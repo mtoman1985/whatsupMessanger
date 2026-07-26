@@ -90,12 +90,16 @@ app.get("/", (req, res) => {
 
 // ==== نقطة الاستقبال التي سيرسل إليها AppSheet ====
 app.post("/webhook/appsheet", async (req, res) => {
+  console.log("📩 طلب جديد وصل من AppSheet:", JSON.stringify(req.body));
+
   try {
     if (WEBHOOK_SECRET && req.query.secret !== WEBHOOK_SECRET) {
+      console.log("❌ رفض الطلب: المفتاح السري غير مطابق");
       return res.status(401).json({ error: "Unauthorized: invalid secret" });
     }
 
     if (!isReady) {
+      console.log("❌ رفض الطلب: واتس اب غير متصل حاليًا");
       return res.status(503).json({
         error: "واتس اب غير متصل حاليًا. افتح رابط /qr وامسح الكود أولًا.",
       });
@@ -103,23 +107,29 @@ app.post("/webhook/appsheet", async (req, res) => {
 
     const { phone, message } = req.body;
     if (!phone || !message) {
+      console.log("❌ رفض الطلب: phone أو message ناقص");
       return res.status(400).json({ error: "الحقول المطلوبة: phone, message" });
     }
 
     // تنظيف رقم الهاتف والتأكد من الصيغة الدولية (بدون + أو رموز)
     const cleanPhone = String(phone).replace(/[^0-9]/g, "");
     const chatId = `${cleanPhone}@c.us`;
+    console.log(`🔍 الرقم بعد التنظيف: ${cleanPhone} — chatId: ${chatId}`);
 
     // التأكد أن الرقم مسجل فعليًا على واتس اب
     const isRegistered = await client.isRegisteredUser(chatId);
+    console.log(`🔍 هل الرقم مسجل على واتس اب؟ ${isRegistered}`);
+
     if (!isRegistered) {
+      console.log(`❌ الرقم ${cleanPhone} غير مسجل على واتس اب`);
       return res.status(404).json({ error: `الرقم ${cleanPhone} غير مسجل على واتس اب` });
     }
 
     await client.sendMessage(chatId, message);
+    console.log(`✅ تم إرسال الرسالة بنجاح إلى ${cleanPhone}`);
     return res.status(200).json({ success: true });
   } catch (err) {
-    console.error("Error sending message:", err.message);
+    console.error("🔥 خطأ أثناء إرسال الرسالة:", err.message);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
