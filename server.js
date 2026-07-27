@@ -25,8 +25,6 @@ const client = new Client({
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
-      "--single-process",
-      "--no-zygote",
       "--disable-extensions",
       "--disable-background-networking",
       "--disable-background-timer-throttling",
@@ -41,7 +39,6 @@ const client = new Client({
       "--no-first-run",
       "--safebrowsing-disable-auto-update",
       "--disable-software-rasterizer",
-      "--renderer-process-limit=1",
     ],
   },
 });
