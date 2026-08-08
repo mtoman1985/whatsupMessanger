@@ -33,31 +33,21 @@ function getMimeType(fileName) {
 
 // ==== إعداد عميل واتس اب ====
 const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: "/data/wwebjs_auth" }),
-  puppeteer: {
-    headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--disable-background-networking",
-      "--disable-background-timer-throttling",
-      "--disable-backgrounding-occluded-windows",
-      "--disable-breakpad",
-      "--disable-component-extensions-with-background-pages",
-      "--disable-default-apps",
-      "--disable-sync",
-      "--disable-translate",
-      "--metrics-recording-only",
-      "--mute-audio",
-      "--no-first-run",
-      "--safebrowsing-disable-auto-update",
-      "--disable-software-rasterizer",
-    ],
-  },
+    puppeteer: {
+        headless: true,
+        timeout: 60000,          // زيادة وقت انتظار فتح المتصفح إلى 60 ثانية
+        protocolTimeout: 60000,  // حل مشكلة رسالة الخطأ الظاهرة لديك
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage', // مهم جداً لسيرفرات Railway لتخفيف استهلاك الذاكرة
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process', // يقلل من استهلاك الرام
+            '--disable-gpu'
+        ]
+    }
 });
 
 client.on("qr", async (qr) => {
