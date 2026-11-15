@@ -17,8 +17,15 @@ const app = express();
 app.use(express.json());
 
 let latestQR = '';
+let botStatus = '⏳ البوت قيد التشغيل...';
+let lastError = '';
 
-const genAI = new GoogleGenerativeAI("AQ.Ab8RN6IkPuSKLGaDQUyQ7mT8S9AbX22wVN5dFAElw_Beyqtfig"); 
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled Rejection:', reason);
+    lastError = String(reason && reason.message ? reason.message : reason);
+});
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || ""); // ضع المفتاح في Render ← Environment باسم GEMINI_API_KEY
 const pendingAIRreplies = {};
 
 const SCOPES = [
@@ -36,7 +43,8 @@ const MAIN_DATA_FILE_ID = '1VPTp4-r7vnR-DhSibNvB27GPXHBqVQ2H';
 const REPORTS_FOLDER_ID = '1DsMhZeikBqmocqKy230FMkIBOVgeg3mm';
 
 // ==========================================
-// ⚙️ لوحة تحكم نسب الأطباء
+// ⚙️ لوحة تحكم نسب الأطباء (يمكنك تعديلها بأي وقت)
+// (0.35 تعني 35% ، 0.40 تعني 40% ، وهكذا)
 // ==========================================
 const DOCTOR_RATES = {
     'حسام العايدي': 0.35, 
@@ -286,6 +294,8 @@ async function sendPdf(whatsappClient, chatId, pdfBuffer, fileName) {
     }
 }
 
+// عمود تاريخ الميلاد في شيت المرضى (Sheet2): اتركه -1 للكشف التلقائي من عنوان العمود (يحتوي كلمة "ميلاد")
+// أو ضع رقم العمود يدوياً (0 = العمود الأول، 1 = الثاني ...)
 const PATIENT_BIRTHDATE_COLUMN = 8;
 
 function findBirthColIndex(rows) {
@@ -351,7 +361,10 @@ async function searchPatientByName(patientName) {
 }
 
 // ==========================================
-// 👤 إدارة بيانات المرضى
+// القوائم الرئيسية
+// ==========================================
+// ==========================================
+// 👤 إدارة بيانات المرضى (إضافة / تعديل) عبر Google Sheets API
 // ==========================================
 const PATIENT_SHEET_KEYWORD = 'Sheet2';
 const PATIENT_COL_ALIASES = {
@@ -389,6 +402,7 @@ function parseBirthInput(text) {
     return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
+// يتحقق من القيمة المدخلة ويحوّلها للصيغة التي تُكتب في الشيت. "-" = تخطي / مسح
 function normalizePatientFieldValue(field, text) {
     const t = (text || '').toString().trim();
     const skip = (t === '-');
@@ -471,6 +485,7 @@ async function getPatientsSheetContext() {
     return { sheets, title, headers, col };
 }
 
+// الأرقام تُكتب كنص (علامة ' في البداية) حتى لا يُحذف الصفر، والتاريخ بصيغة ISO ليفهمه الشيت بغض النظر عن لغته
 function toCellValue(field, value) {
     if ((field === 'phone' || field === 'phone2') && value) return "'" + value;
     return value || '';
@@ -478,7 +493,7 @@ function toCellValue(field, value) {
 
 async function addPatientToSheet(data) {
     const ctx = await getPatientsSheetContext();
-    const id = crypto.randomBytes(4).toString('hex');
+    const id = crypto.randomBytes(4).toString('hex'); // نفس شكل UNIQUEID() في AppSheet
     const width = Math.max(ctx.headers.length, ...Object.values(ctx.col).map(i => i + 1));
     const row = new Array(width).fill('');
     row[ctx.col.id] = "'" + id;
@@ -590,17 +605,18 @@ function formatDetailedReport(patient, result, currentUser) {
         return `❌ لا توجد أي جلسات مسجلة للمريض *${patient.name}* خلال هذه الفترة.\n\n💡 (أرسل "0" للرجوع).`;
     }
     let msg = `🦷 *كشف الحساب والعمل المجمع للمريض*\n👤 *الاسم:* ${patient.name}\n🗓️ *الفترة:* ${result.periodLabel}\n═══════════════════\n\n`;
-    result.groupedByTooth.forEach((t) => { msg += `🦷 *رقم السن:* ${t.tooth || 'عام'}\n🛠 *نوع العمل:* ${t.workTypes}\n`; if (t.agreed > 0) msg += `🤝 *المتفق عليه:* ${t.agreed} شيكل\n`; msg += `💰 *المطلوب:* ${t.required} | 💵 *المدفوع:* ${t.paid}\n〰〰️〰️〰️〰️〰️\n`; });
+    result.groupedByTooth.forEach((t) => { msg += `🦷 *رقم السن:* ${t.tooth || 'عام'}\n🛠 *نوع العمل:* ${t.workTypes}\n`; if (t.agreed > 0) msg += `🤝 *المتفق عليه:* ${t.agreed} شيكل\n`; msg += `💰 *المطلوب:* ${t.required} | 💵 *المدفوع:* ${t.paid}\n〰️️〰️〰️〰️〰️〰️\n`; });
     msg += `\n📊 *الإجماليات الكلية:* \n🔸 المتفق عليه: *${result.totalAgreed} شيكل*\n🔹 المطلوب: *${result.totalRequired} شيكل*\n🔹 المدفوع: *${result.totalPaid} شيكل*\n`;
     if (result.balance > 0) msg += `🔴 *الرصيد المتبقي عليه:* *${result.balance} شيكل*\n`; else if (result.balance < 0) msg += `🔵 *رصيد مسدد بزيادة:* *${Math.abs(result.balance)} شيكل*\n`; else msg += `🟢 *الحساب مسدد بالكامل*\n`;
     return msg + '\n\n📄 *لاستخراج هذا الكشف كملف PDF للطباعة، أرسل رقم 1*\n💡 (أرسل "0" للرجوع).';
 }
 
+// ورقة العيادة (الخلفية) - ضع الصورة بجانب ملف البوت باسم letterhead.jpg
 let LETTERHEAD_B64 = null;
 try { LETTERHEAD_B64 = fs.readFileSync(path.join(__dirname, 'letterhead.jpg')).toString('base64'); } catch (e) { console.log('⚠️ لم يتم العثور على letterhead.jpg - ستصدر الفاتورة بدون ورقة العيادة.'); }
 
 function buildInvoiceHTML(patient, result) {
-    const ageText = calculateAgeText(patient.birth); const reportDate = formatDisplayDate(getStandardDateISO(new Date())); const ROWS_PER_PAGE = 7;
+    const ageText = calculateAgeText(patient.birth); const reportDate = formatDisplayDate(getStandardDateISO(new Date())); const ROWS_PER_PAGE = 7; // عدد الأسنان في كل صفحة
     const bgStyle = LETTERHEAD_B64 ? `background-image: url('data:image/jpeg;base64,${LETTERHEAD_B64}');` : '';
     const list = result.groupedByTooth;
     const pages = [];
@@ -648,6 +664,9 @@ async function generatePDFReport(patient, result, currentUser) {
     } finally { if (browser) await browser.close(); }
 }
 
+// ==========================================
+// التقرير المالي الختامي للإدارة
+// ==========================================
 function createFinanceObj() {
     return {
         ILS: { income: 0, expense: 0, debt: 0, cash: 0, app: 0, req: 0 },
@@ -659,6 +678,7 @@ const EXPENSE_CATEGORIES = [
     'الرواتب', 'اللوجستيات', 'المواصلات', 'كهرباء', 'غداء', 'مياه', 'ايجار', 'معامل أسنان', 'مواد أسنان', 'أخرى'
 ];
 
+// 🔍 أداة تدقيق: تعرض كل حركات مريض في شيت الوارد (بدون فلتر تاريخ) لمعرفة سبب أي فرق في الديون
 async function auditPatientDebt(query) {
     try {
         const authClient = await checkAndGetGoogleAuth();
@@ -713,12 +733,14 @@ async function fetchFinancialReportAdmin(filter, currentUser) {
         const incomingRows = await getWorkbookRows(authClient, MAIN_DATA_FILE_ID, 'الوارد');
         const outgoingRows = await getWorkbookRows(authClient, MAIN_DATA_FILE_ID, 'الصادر');
         
+        const isAdminOrManager = (currentUser.permission === 'مسؤول' || currentUser.permission === 'إداري');
         const targetDoctor = filter.doctor || 'الكل';
         const targetClinic = filter.clinic || 'الكل';
         const dateRange = filter.dateRange;
 
         let report = { clinics: {}, special: { private: { ILS: 0, USD: 0, details: [] }, supplies: { ILS: 0, USD: 0, details: [] } } };
 
+        // 1. معالجة الوارد
         for (let i = 1; i < incomingRows.length; i++) {
             const row = incomingRows[i]; if (!row || row.length === 0) continue;
             if (row[4] === 'المدفوع' || row[1] === 'التاريخ') continue; 
@@ -781,6 +803,7 @@ async function fetchFinancialReportAdmin(filter, currentUser) {
             const dRec = cObj.patientDebts[debtKey]; if (!dRec.docs[docName]) dRec.docs[docName] = { req: 0, paid: 0 }; dRec.docs[docName].req += reqVal; dRec.docs[docName].paid += paidVal;
         }
 
+        // 2. معالجة الصادر
         if (outgoingRows && outgoingRows.length > 1) {
             for (let j = 1; j < outgoingRows.length; j++) {
                 const row = outgoingRows[j]; if (!row || row.length === 0) continue;
@@ -805,6 +828,7 @@ async function fetchFinancialReportAdmin(filter, currentUser) {
                     let expCurrency = (row[6] || 'شيكل').toString().trim();
                     const isDollar = expCurrency.includes('دولار') || expCurrency.includes('$');
 
+                    // 🔹 المصاريف الخاصة والتوريدات: تُحسب منفصلة وتظهر في الملخص النهائي
                     const isSupplyExp = expTypeRaw.includes('توريد') || cName.includes('توريد');
                     const isPrivateExp = !isSupplyExp && (expTypeRaw.includes('خاص') || cName.includes('خاص'));
                     if (isSupplyExp || isPrivateExp) {
@@ -859,7 +883,6 @@ async function fetchFinancialReportAdmin(filter, currentUser) {
             }
         }
 
-        const isAdminOrManager = (currentUser.permission === 'مسؤول' || currentUser.permission === 'إداري');
         return { report, isAdminOrManager, targetClinic, periodLabel: filter.dateRange ? filter.dateRange.label : 'الشهر الحالي' };
     } catch (error) { console.error('Daily Report Error:', error); return { error: '⚠️ حدث خطأ أثناء تجميع التقرير.' }; }
 }
@@ -889,6 +912,8 @@ async function generateClinicFinancialPDF(res) {
         </style></head><body>`;
 
         const clinics = Object.keys(r.clinics).sort();
+
+        // 1. الملخص الشامل (المطلوب + الإيرادات + المصروفات + المصاريف الخاصة والتوريدات)
         const special = r.special || { private: { ILS: 0, USD: 0, details: [] }, supplies: { ILS: 0, USD: 0, details: [] } };
         const fmt = (v) => Math.round((v || 0) * 100) / 100;
 
@@ -973,6 +998,7 @@ async function generateClinicFinancialPDF(res) {
         globalSummaryHtml += buildGlobalSummaryTable('ILS', '₪', true);
         globalSummaryHtml += buildGlobalSummaryTable('USD', '$', false);
 
+        // جدول المرضى: الاسم + المطلوب + المدفوع + المتبقي
         const mergedPatients = {};
         clinics.forEach(cName => {
             Object.values(r.clinics[cName].patientDebts).forEach(p => {
@@ -1018,6 +1044,7 @@ async function generateClinicFinancialPDF(res) {
         globalSummaryHtml += `<div class="page-break"></div>`;
         htmlContent += globalSummaryHtml;
 
+        // 2. تفاصيل العيادات
         clinics.forEach((cName, index) => {
             if(index > 0) htmlContent += `<div class="page-break"></div>`;
             const c = r.clinics[cName];
@@ -1074,10 +1101,13 @@ async function generateClinicFinancialPDF(res) {
                     htmlContent += `<table><thead><tr><th>اسم الطبيب (النسبة)</th><th>إجمالي المطلوب</th><th>إجمالي المدفوع</th><th>المستحق المالي</th></tr></thead><tbody>`;
                     docs.forEach(doc => {
                         const t = c.doctorTotals[doc];
+                        
+                        // ✅ استخراج نسبة الطبيب من القائمة (وإلا 35% افتراضياً)
                         let pct = 0.35;
                         for (let dName in DOCTOR_RATES) {
                             if (doc.includes(dName) || dName.includes(doc)) { pct = DOCTOR_RATES[dName]; break; }
                         }
+                        
                         if(t.ILS.req > 0 || t.ILS.paid > 0 || t.USD.req > 0 || t.USD.paid > 0){
                             htmlContent += `<tr><td style="color:#2c3e50; font-weight:800;">د. ${doc}<br><span style="font-size:16px; color:#7f8c8d;">(${Math.round(pct*100)}%)</span></td>`;
                             htmlContent += `<td style="color:#e67e22;">${t.ILS.req>0 ? t.ILS.req+'₪ ' : ''}${t.USD.req>0 ? '| '+t.USD.req+'$' : ''}</td>`;
@@ -1163,6 +1193,9 @@ async function generateDebtPDF(res) {
     } finally { if (browser) await browser.close(); }
 }
 
+// ==========================================
+// دالة تقرير الطبيب اليومي
+// ==========================================
 async function fetchDoctorDailySummary(doctorName) {
     try {
         const authClient = await checkAndGetGoogleAuth();
@@ -1224,6 +1257,9 @@ async function fetchDoctorDailySummary(doctorName) {
     }
 }
 
+// ==========================================
+// إدارة المواعيد وتجهيز الأسماء 
+// ==========================================
 async function fetchAppointmentsFromSheet(filter) {
     try {
         const authClient = await checkAndGetGoogleAuth();
@@ -1261,7 +1297,7 @@ async function fetchAppointmentsFromSheet(filter) {
             data.push({ patient: pName, doctor: doctor, clinic: clinic, date: dateStr, start: timeStr });
         }
         return { data };
-    } catch (error) { return { error: '⚠ حدث خطأ فني أثناء المواعيد.' }; }
+    } catch (error) { return { error: '⚠️️ حدث خطأ فني أثناء المواعيد.' }; }
 }
 
 function formatAppointmentMessage(patientName, patientPhone, appts) {
@@ -1280,6 +1316,9 @@ function formatQueueBookingMessage(reportResult) {
     return msg + '\n💡 (أرسل "استعلام" للبدء من جديد).';
 }
 
+// ==========================================
+// متعقب شيت الوارد الذكي
+// ==========================================
 let lastKnownRowCount = -1;
 function startSheetTracker(whatsappClient) {
     setInterval(async () => {
@@ -1317,6 +1356,10 @@ function startSheetTracker(whatsappClient) {
     }, 15000); 
 }
 
+// ==========================================
+// الإشعارات والعمليات الخلفية
+// ==========================================
+// تقرير الساعة 11 مساءً: نفس الدالة تعمل تلقائياً (بدون وسيط) أو كاختبار (testChatId = محادثة من طلب الاختبار فقط)
 async function run11PMReport(whatsappClient, testChatId, testUser) {
     const isTest = !!testChatId;
     try {
@@ -1325,6 +1368,7 @@ async function run11PMReport(whatsappClient, testChatId, testUser) {
             return;
         }
 
+        // 1) تقرير الأطباء اليومي
         if (isTest) {
             if (testUser && testUser.role === 'طبيب أسنان') {
                 const doctorMsg = await fetchDoctorDailySummary(testUser.name);
@@ -1344,6 +1388,7 @@ async function run11PMReport(whatsappClient, testChatId, testUser) {
             }
         }
 
+        // 2) التقرير المالي المجمع
         const botUser = { name: 'النظام الآلي', permission: 'مسؤول' };
         const todayISO = getStandardDateISO(new Date());
         const dailyFilter = {
@@ -1420,33 +1465,26 @@ app.post('/api/jawwal-pay', (req, res) => {
 });
 
 // ==========================================
-// 🌐 مسار لعرض QR Code في المتصفح عبر الرابط /qr
+// 🌐 صفحة حالة البوت (/) وعرض QR (/qr)
 // ==========================================
+function statusPage(inner) {
+    return `<html dir="rtl"><head><meta charset="UTF-8"><meta http-equiv="refresh" content="5"><title>حالة البوت</title></head>
+    <body style="font-family:Cairo,sans-serif; text-align:center; padding-top:30px; background:#f4f9f9;">${inner}</body></html>`;
+}
+const errBox = () => lastError ? `<p style="color:#c0392b; direction:ltr; word-break:break-all;">${String(lastError).replace(/</g, '&lt;')}</p>` : '';
+
+app.get('/', (req, res) => {
+    res.send(statusPage(`<h2 style="color:#168a9a;">الحالة: ${botStatus}</h2>${errBox()}<p><a href="/qr">/qr</a></p>`));
+});
+
 app.get('/qr', (req, res) => {
     if (!latestQR) {
-        return res.send(`
-            <html dir="rtl"><head><meta charset="UTF-8"><title>حالة الواتساب</title></head>
-            <body style="font-family:Cairo,sans-serif; text-align:center; padding-top:50px; background:#f4f9f9;">
-                <h2 style="color:#168a9a;">✅ الواتساب مرتبط بالفعل أو جاري التحميل ولا يحتاج لمسح رمز جديد!</h2>
-                <p>إذا أردت ربط جهاز جديد، قم بعمل (Manual Deploy) من لوحة تحكم Render.</p>
-            </body></html>
-        `);
+        return res.send(statusPage(`<h2 style="color:#168a9a;">الحالة: ${botStatus}</h2>${errBox()}<p>لا يوجد رمز QR حالياً. الصفحة تتحدث تلقائياً كل 5 ثوانٍ.</p>`));
     }
-    res.send(`
-        <html dir="rtl"><head><meta charset="UTF-8"><title>مسح رمز الواتساب</title></head>
-        <body style="font-family:Cairo,sans-serif; text-align:center; padding-top:30px; background:#f4f9f9;">
-            <h2 style="color:#168a9a;">امسح الرمز أدناه لتفعيل بوت عيادة الأسنان 🦷</h2>
-            <div id="qrcode" style="display:inline-block; margin-top:20px; background:white; padding:20px; border-radius:10px; box-shadow:0 4px 10px rgba(0,0,0,0.1);"></div>
-            <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-            <script>
-                new QRCode(document.getElementById("qrcode"), {
-                    text: "${latestQR}",
-                    width: 265,
-                    height: 265
-                });
-            </script>
-        </body></html>
-    `);
+    res.send(statusPage(`<h2 style="color:#168a9a;">امسح الرمز لتفعيل بوت عيادة الأسنان 🦷</h2>
+        <div id="qrcode" style="display:inline-block; margin-top:20px; background:white; padding:20px; border-radius:10px; box-shadow:0 4px 10px rgba(0,0,0,0.1);"></div>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+        <script>new QRCode(document.getElementById("qrcode"), { text: ${JSON.stringify(latestQR)}, width: 265, height: 265 });</script>`));
 });
 
 const PORT = process.env.PORT || 7861; 
@@ -1454,396 +1492,420 @@ app.listen(PORT, () => { console.log(`🌍 نظام الاستقبال يعمل 
 
 // ==========================================
 // 🔌 الاتصال بقاعدة بيانات MongoDB وتجهيز RemoteAuth
+// (ضع الرابط في Render ← Environment باسم MONGODB_URI ولا تكتبه في الكود)
 // ==========================================
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://mtoman1985:Ofar017157@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority";
+const MONGODB_URI = process.env.MONGODB_URI;
 
-mongoose.connect(MONGODB_URI).then(() => {
-    console.log('✅ تم الاتصال بقاعدة بيانات MongoDB بنجاح.');
+function startBot() {
+    botStatus = '⏳ جاري الاتصال بـ MongoDB...';
+    mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 20000 }).then(() => {
+        console.log('✅ تم الاتصال بقاعدة بيانات MongoDB بنجاح.');
+        botStatus = '⏳ تم الاتصال بـ MongoDB، جاري تشغيل واتساب...';
 
-    const store = new MongoStore({ mongoose: mongoose });
+        const store = new MongoStore({ mongoose: mongoose });
 
-    const client = new Client({
-        authStrategy: new RemoteAuth({
-            store: store,
-            backupSyncIntervalMs: 300000 // مزامنة الجلسة السحابية كل 5 دقائق
-        }),
-        puppeteer: { 
-            headless: true, 
-            args: [
-                '--no-sandbox', 
-                '--disable-setuid-sandbox', 
-                '--disable-dev-shm-usage', 
-                '--disable-accelerated-2d-canvas', 
-                '--no-first-run', 
-                '--no-zygote', 
-                '--single-process', 
-                '--disable-gpu',
-                '--disable-software-rasterizer',
-                '--mute-audio'
-            ], 
-            timeout: 60000 // زيادة مهلة المتصفح إلى 60 ثانية لتجنب أخطاء المهلة
-        },
-        authTimeoutMs: 60000, 
-        qrMaxRetries: 4
-    });
+        const client = new Client({
+            authStrategy: new RemoteAuth({
+                store: store,
+                backupSyncIntervalMs: 300000 // مزامنة الجلسة السحابية كل 5 دقائق
+            }),
+            puppeteer: {
+                headless: true,
+                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process',
+                    '--disable-gpu',
+                    '--disable-software-rasterizer',
+                    '--mute-audio'
+                ],
+                timeout: 60000
+            },
+            authTimeoutMs: 60000,
+            qrMaxRetries: 4
+        });
 
-    client.on('qr', (qr) => { 
-        latestQR = qr;
-        console.log('\n✅ تم توليد باركود جديد (افتح رابط /qr لمسحه):'); 
-        qrcode.generate(qr, { small: true });
-        fs.writeFileSync('qr_code.txt', qr); 
-    });
+        client.on('qr', (qr) => {
+            latestQR = qr;
+            botStatus = '📱 امسح رمز QR الآن (افتح /qr)';
+            console.log('\n✅ تم توليد باركود جديد (افتح رابط /qr لمسحه):');
+            qrcode.generate(qr, { small: true });
+            fs.writeFileSync('qr_code.txt', qr);
+        });
 
-    client.on('ready', async () => {
-        console.log('\n✅ تم الربط بنجاح! البوت متصل بالواتساب وجاهز للعمل! 🚀');
-        latestQR = ''; // مسح الرمز لأنه تم الاتصال بنجاح
-        if (fs.existsSync('qr_code.txt')) fs.unlinkSync('qr_code.txt');
-        
-        if (!isSystemInitialized) {
-            await checkAndGetGoogleAuth();
-            startSheetTracker(client); 
-            schedule11PMReport(client); 
-            scheduleMorningAppointments(client); 
-            console.log('✅ تم تفعيل الجداول الزمنية والمتعقب بنجاح.');
-            isSystemInitialized = true;
+        client.on('loading_screen', (percent, message) => {
+            botStatus = `⏳ تحميل واتساب ويب ${percent}% ${message}`;
+            console.log(botStatus);
+        });
+
+        client.on('authenticated', () => {
+            botStatus = '🔐 تمت المصادقة، جاري التحميل...';
+            latestQR = '';
+            console.log(botStatus);
+        });
+
+        client.on('auth_failure', (m) => {
+            botStatus = '❌ فشل المصادقة';
+            lastError = String(m);
+            console.error(botStatus, m);
+        });
+
+        client.on('ready', async () => {
+            console.log('\n✅ تم الربط بنجاح! البوت متصل بالواتساب وجاهز للعمل! 🚀');
+            botStatus = '✅ متصل وجاهز';
+            latestQR = '';
+            lastError = '';
+            if (fs.existsSync('qr_code.txt')) fs.unlinkSync('qr_code.txt');
+
+            if (!isSystemInitialized) {
+                try { await checkAndGetGoogleAuth(); } catch (e) { lastError = 'Google auth: ' + e.message; console.error(e); }
+                startSheetTracker(client);
+                schedule11PMReport(client);
+                scheduleMorningAppointments(client);
+                console.log('✅ تم تفعيل الجداول الزمنية والمتعقب بنجاح.');
+                isSystemInitialized = true;
+            }
+        });
+
+        client.on('remote_session_saved', () => {
+            console.log('💾 تم حفظ ملفات الجلسة في قاعدة بيانات MongoDB بنجاح ولن تحتاج لمسح الـ QR مجدداً.');
+        });
+
+        client.on('disconnected', (reason) => {
+            botStatus = '🔴 منقطع: ' + reason;
+            console.log('🔴 تم قطع الاتصال بالواتساب:', reason);
+            setTimeout(() => {
+                client.initialize().catch(err => { lastError = err.message; console.error('Re-init error:', err); });
+            }, 5000);
+        });
+
+client.on('message_create', async msg => {
+    try {
+        let senderPhone = (msg.author || msg.from).split('@')[0];
+        if (senderPhone.includes(':')) senderPhone = senderPhone.split(':')[0];
+
+        const text = msg.body ? msg.body.trim() : '';
+
+        // 🛠️ أداة الفحص السريعة لمعرفة رقمك
+        if (text === 'رقمي') {
+            const isReg = USERS[senderPhone] ? '✅ مسجل كـ ' + USERS[senderPhone].permission : '❌ غير مسجل';
+            return msg.reply(`📱 رقمك الذي يقرؤه البوت هو:\n*${senderPhone}*\n\nحالة الرقم في النظام:\n${isReg}`);
         }
-    });
 
-    client.on('remote_session_saved', () => {
-        console.log('💾 تم حفظ ملفات الجلسة في قاعدة بيانات MongoDB بنجاح ولن تحتاج لمسح الـ QR مجدداً.');
-    });
+        if (msg.fromMe && msg.to !== msg.from) {
+            let targetPhone = msg.to.split('@')[0];
+            if (targetPhone.includes(':')) targetPhone = targetPhone.split(':')[0];
+            if (!USERS[targetPhone] || (USERS[targetPhone].permission !== 'مسؤول' && USERS[targetPhone].permission !== 'إداري')) return;
+        }
 
-    client.on('disconnected', (reason) => { 
-        console.log('🔴 تم قطع الاتصال بالواتساب:', reason); 
-        setTimeout(() => { client.initialize(); }, 5000); 
-    });
+        const botSignatures = ['الرجاء اختيار الخدمة', 'أرسل الرقم المطلوب', '💡', '✅', '❌', '📋', '🦷', '⏳', '📅', '👨‍⚕️', '🗓️', '🔤', '📝', '🔔', '📄', '📊', '🛒', '🏥', '☀️', '⚠️', '🌐', '🌙'];
+        if (msg.fromMe && botSignatures.some(sig => text.includes(sig))) return;
 
-    client.on('message_create', async msg => {
-        try {
-            let senderPhone = (msg.author || msg.from).split('@')[0];
-            if (senderPhone.includes(':')) senderPhone = senderPhone.split(':')[0];
+        const currentUser = USERS[senderPhone];
+        const isAdmin = (currentUser && (currentUser.permission === 'مسؤول' || currentUser.permission === 'إداري'));
 
-            const text = msg.body ? msg.body.trim() : '';
+        if (isAdmin && text === 'ربط جوجل') {
+            try {
+                const credentials = JSON.parse(fs.readFileSync('credentials.json'));
+                const keys = credentials.web || credentials.installed;
+                const oAuth2Client = new google.auth.OAuth2(keys.client_id, keys.client_secret, keys.redirect_uris[0]);
+                const authUrl = oAuth2Client.generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: SCOPES });
+                return msg.reply(`🌐 *رابط تجديد الصلاحيات:*\n\n${authUrl}\n\nبعد الموافقة، سيتم توجيهك لصفحة. فقط **انسخ الرابط بالكامل من شريط العنوان في الأعلى** وأرسله لي هكذا:\n\nكود جوجل [الرابط]`);
+            } catch (err) { return msg.reply('❌ فشل توليد الرابط. تأكد من وجود ملف credentials.json'); }
+        }
 
-            if (text === 'رقمي') {
-                const isReg = USERS[senderPhone] ? '✅ مسجل كـ ' + USERS[senderPhone].permission : '❌ غير مسجل';
-                return msg.reply(`📱 رقمك الذي يقرؤه البوت هو:\n*${senderPhone}*\n\nحالة الرقم في النظام:\n${isReg}`);
-            }
+        if (isAdmin && text.startsWith('كود جوجل')) {
+            const input = text.replace('كود جوجل', '').trim();
+            let code = input; const match = input.match(/code=([^&]+)/);
+            if (match) { code = decodeURIComponent(match[1]); }
+            try {
+                const credentials = JSON.parse(fs.readFileSync('credentials.json'));
+                const keys = credentials.web || credentials.installed;
+                const oAuth2Client = new google.auth.OAuth2(keys.client_id, keys.client_secret, keys.redirect_uris[0]);
+                const { tokens } = await oAuth2Client.getToken(code);
+                
+                let replyMsg = `✅ مبروك! تم الربط وتحديث الصلاحيات بنجاح!\n\n`;
+                replyMsg += `⚠️ *لضمان عدم طلب الربط منك مرة أخرى أبداً:*\n`;
+                replyMsg += `بما أن سيرفر Hugging Face يحذف الملفات المؤقتة عند إعادة تشغيله، يرجى حفظ الصلاحية بشكل دائم كالتالي:\n\n`;
+                replyMsg += `1️⃣ اذهب إلى ملفات البوت واضغط على *Add file* ثم *Create a new file*.\n`;
+                replyMsg += `2️⃣ في خانة الاسم اكتب بالضبط: *token.json*\n`;
+                replyMsg += `3️⃣ انسخ الكود الموجود في الرسالة التالية بالكامل، الصقه داخل الملف، واضغط *Commit new file*.\n\n👇 الكود في الرسالة القادمة:`;
 
-            if (msg.fromMe && msg.to !== msg.from) {
-                let targetPhone = msg.to.split('@')[0];
-                if (targetPhone.includes(':')) targetPhone = targetPhone.split(':')[0];
-                if (!USERS[targetPhone] || (USERS[targetPhone].permission !== 'مسؤول' && USERS[targetPhone].permission !== 'إداري')) return;
-            }
+                await msg.reply(replyMsg);
+                return client.sendMessage(msg.from, JSON.stringify(tokens, null, 2));
+            } catch (err) { return msg.reply('❌ فشل الربط: ' + err.message + '\n\n💡 أرسل "ربط جوجل" للحصول على رابط جديد.'); }
+        }
+        
+        // 🧪 اختبار تقرير الساعة 11: يُرسل لك أنت فقط (للإدارة)
+        if (isAdmin && (text === 'اختبار التقرير' || text === 'اختبار تقرير 11')) {
+            await msg.reply('⏳ جاري تشغيل اختبار تقرير الساعة 11 (سيصلك أنت فقط)...');
+            await run11PMReport(client, msg.from, currentUser);
+            return;
+        }
 
-            const botSignatures = ['الرجاء اختيار الخدمة', 'أرسل الرقم المطلوب', '💡', '✅', '❌', '📋', '🦷', '⏳', '📅', '👨‍⚕️', '🗓️', '🔤', '📝', '🔔', '📄', '📊', '🛒', '🏥', '☀️', '⚠️', '🌐', '🌙'];
-            if (msg.fromMe && botSignatures.some(sig => text.includes(sig))) return;
+        // 🔍 تدقيق حركات مريض: اكتب "تدقيق اسم المريض"
+        if (isAdmin && text.startsWith('تدقيق')) {
+            const q = text.replace(/^تدقيق(\s+دين)?/, '').trim();
+            if (!q) return msg.reply('🔍 اكتب: *تدقيق اسم المريض*\nمثال: تدقيق فاطمة الطويل');
+            await msg.reply('⏳ جاري التدقيق...');
+            return msg.reply(await auditPatientDebt(q));
+        }
 
-            const currentUser = USERS[senderPhone];
-            const isAdmin = (currentUser && (currentUser.permission === 'مسؤول' || currentUser.permission === 'إداري'));
-
-            if (isAdmin && text === 'ربط جوجل') {
-                try {
-                    const credentials = JSON.parse(fs.readFileSync('credentials.json'));
-                    const keys = credentials.web || credentials.installed;
-                    const oAuth2Client = new google.auth.OAuth2(keys.client_id, keys.client_secret, keys.redirect_uris[0]);
-                    const authUrl = oAuth2Client.generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: SCOPES });
-                    return msg.reply(`🌐 *رابط تجديد الصلاحيات:*\n\n${authUrl}\n\nبعد الموافقة، سيتم توجيهك لصفحة. فقط **انسخ الرابط بالكامل من شريط العنوان في الأعلى** وأرسله لي هكذا:\n\nكود جوجل [الرابط]`);
-                } catch (err) { return msg.reply('❌ فشل توليد الرابط. تأكد من وجود ملف credentials.json'); }
-            }
-
-            if (isAdmin && text.startsWith('كود جوجل')) {
-                const input = text.replace('كود جوجل', '').trim();
-                let code = input; const match = input.match(/code=([^&]+)/);
-                if (match) { code = decodeURIComponent(match[1]); }
-                try {
-                    const credentials = JSON.parse(fs.readFileSync('credentials.json'));
-                    const keys = credentials.web || credentials.installed;
-                    const oAuth2Client = new google.auth.OAuth2(keys.client_id, keys.client_secret, keys.redirect_uris[0]);
-                    const { tokens } = await oAuth2Client.getToken(code);
-                    
-                    let replyMsg = `✅ مبروك! تم الربط وتحديث الصلاحيات بنجاح!\n\n`;
-                    replyMsg += `⚠️ *لضمان عدم طلب الربط منك مرة أخرى أبداً:*\n`;
-                    replyMsg += `بما أن سيرفر الحوسبة يحذف الملفات المؤقتة عند إعادة تشغيله، يرجى حفظ الصلاحية بشكل دائم كالتالي:\n\n`;
-                    replyMsg += `1️⃣ اذهب إلى ملفات البوت واضغط على *Add file* ثم *Create a new file*.\n`;
-                    replyMsg += `2️⃣ في خانة الاسم اكتب بالضبط: *token.json*\n`;
-                    replyMsg += `3️⃣ انسخ الكود الموجود في الرسالة التالية بالكامل، الصقه داخل الملف، واضغط *Commit new file*.\n\n👇 الكود في الرسالة القادمة:`;
-
-                    await msg.reply(replyMsg);
-                    return client.sendMessage(msg.from, JSON.stringify(tokens, null, 2));
-                } catch (err) { return msg.reply('❌ فشل الربط: ' + err.message + '\n\n💡 أرسل "ربط جوجل" للحصول على رابط جديد.'); }
-            }
-            
-            if (isAdmin && (text === 'اختبار التقرير' || text === 'اختبار تقرير 11')) {
-                await msg.reply('⏳ جاري تشغيل اختبار تقرير الساعة 11 (سيصلك أنت فقط)...');
-                await run11PMReport(client, msg.from, currentUser);
-                return;
-            }
-
-            if (isAdmin && text.startsWith('تدقيق')) {
-                const q = text.replace(/^تدقيق(\s+دين)?/, '').trim();
-                if (!q) return msg.reply('🔍 اكتب: *تدقيق اسم المريض*\nمثال: تدقيق فاطمة الطويل');
-                await msg.reply('⏳ جاري التدقيق...');
-                return msg.reply(await auditPatientDebt(q));
-            }
-
-            if (!currentUser) {
-                if (msg.fromMe) { const recipientPhone = msg.to.split('@')[0]; if (pendingAIRreplies[recipientPhone]) { clearTimeout(pendingAIRreplies[recipientPhone].timer); delete pendingAIRreplies[recipientPhone]; } return; }
-                if (!text) return;
-                if (!pendingAIRreplies[senderPhone]) pendingAIRreplies[senderPhone] = { messages: [], timer: null };
-                pendingAIRreplies[senderPhone].messages.push(text);
-                clearTimeout(pendingAIRreplies[senderPhone].timer);
-                pendingAIRreplies[senderPhone].timer = setTimeout(async () => {
-                    try {
-                        let orthoDate = new Date('2026-09-12T00:00:00'); const todayDate = new Date(); todayDate.setHours(0, 0, 0, 0); 
-                        while (orthoDate < todayDate) { orthoDate.setDate(orthoDate.getDate() + 14); }
-                        const oDay = String(orthoDate.getDate()).padStart(2, '0'); const oMonth = String(orthoDate.getMonth() + 1).padStart(2, '0'); const oYear = orthoDate.getFullYear();
-                        const nextOrthoDateStr = `${oDay}/${oMonth}/${oYear}`;
-                        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-                        const fullPatientMessage = pendingAIRreplies[senderPhone].messages.join(' \n');
-                        let customClinicInfo = fs.existsSync('ai_info.txt') ? fs.readFileSync('ai_info.txt', 'utf8') : 'العيادة تعمل يومياً من 8 صباحاً للرابعة عصراً.';
-                        const prompt = `أنت سكرتير افتراضي ذكي لعيادات طب الأسنان.\nرسالة المريض: "${fullPatientMessage}"\nتعليمات العيادة: ${customClinicInfo}\nملاحظة حاسبة المواعيد: مواعيد تقويم الأسنان المتاحة القادمة هي يوم (${nextOrthoDateStr}) من الساعة 10:00 صباحاً حتى 2:00 مساءً. (أخبر المريض بهذا التاريخ إذا سأل عن التقويم).\nأجب باختصار شديد وبلهجة شامية مهنية ومحترمة.`;
-                        const result = await model.generateContent(prompt);
-                        client.sendMessage(msg.from, result.response.text()); delete pendingAIRreplies[senderPhone];
-                    } catch (err) {}
-                }, 60000); 
-                return; 
-            }
-
+        if (!currentUser) {
+            if (msg.fromMe) { const recipientPhone = msg.to.split('@')[0]; if (pendingAIRreplies[recipientPhone]) { clearTimeout(pendingAIRreplies[recipientPhone].timer); delete pendingAIRreplies[recipientPhone]; } return; }
             if (!text) return;
-            if (text === 'استعلام' || text === 'إستعلام') { userState[senderPhone] = 'MENU'; userSelectedQueue[senderPhone] = []; dailyFilters[senderPhone] = {}; financialFilters[senderPhone] = {}; return msg.reply(renderMainMenu(currentUser)); }
-            const isBack = (text === '0' || text === 'رجوع' || text === 'الرجوع' || text === 'خروج');
-            if (isBack) {
-                const currentState = userState[senderPhone];
-                if (!currentState || currentState === 'MENU') { userState[senderPhone] = 'MENU'; return msg.reply(renderMainMenu(currentUser)); }
-                if (currentState === 'PAT_MGMT_MENU') { userState[senderPhone] = 'MENU'; delete patientForm[senderPhone]; return msg.reply(renderMainMenu(currentUser)); }
-                if (typeof currentState === 'string' && currentState.startsWith('PAT_')) { userState[senderPhone] = 'PAT_MGMT_MENU'; patientForm[senderPhone] = {}; return msg.reply(renderPatientMgmtMenu()); }
-                if (['WAITING_NAME', 'APPT_MAIN_MENU', 'CLINICAL_SINGLE_INPUT', 'QUEUE_SEARCH_INPUT', 'QUEUE_ACTION_MENU', 'DAILY_CLINIC_SELECT', 'FINANCIAL_CLINIC_SELECT', 'DEBT_CLINIC_SELECT', 'WAITING_AI_INFO'].includes(currentState)) { userState[senderPhone] = 'MENU'; userSelectedQueue[senderPhone] = []; dailyFilters[senderPhone] = {}; financialFilters[senderPhone] = {}; return msg.reply(renderMainMenu(currentUser)); }
-                if (currentState === 'CLINICAL_SINGLE_DATE_MENU') { userState[senderPhone] = 'CLINICAL_SINGLE_INPUT'; delete userStateData[senderPhone]; return msg.reply('🔤 الرجاء إرسال *اسم المريض*:\n*(أرسل "0" للرجوع)*'); }
-                if (currentState === 'CLINICAL_SINGLE_CUSTOM_DATE' || currentState === 'CLINICAL_SINGLE_ACTION') { userState[senderPhone] = 'CLINICAL_SINGLE_DATE_MENU'; return msg.reply(renderPatientDateRangeMenu(userStateData[senderPhone].patient.name)); }
-                if (currentState === 'CLINICAL_SINGLE_SELECT') { userState[senderPhone] = 'CLINICAL_SINGLE_INPUT'; delete userSearchResults[senderPhone]; return msg.reply('🔤 الرجاء إرسال *اسم المريض*:\n*(أرسل "0" للرجوع)*'); }
-                if (currentState === 'QUEUE_SELECT_PATIENT') { userState[senderPhone] = 'QUEUE_SEARCH_INPUT'; delete userSearchResults[senderPhone]; return msg.reply('🔤 الرجاء إرسال *اسم المريض*:\n*(أرسل "0" للرجوع)*'); }
-                if (currentState === 'APPT_PATIENT_SEARCH_INPUT') { userState[senderPhone] = 'APPT_MAIN_MENU'; return msg.reply(renderApptMainMenu()); }
-                if (currentState === 'APPT_PATIENT_SELECT') { userState[senderPhone] = 'APPT_PATIENT_SEARCH_INPUT'; delete userSearchResults[senderPhone]; return msg.reply('🔤 الرجاء إرسال *اسم المريض*:\n*(أرسل "0" للرجوع)*'); }
-                if (currentState === 'ADMIN_APPT_TARGET') { userState[senderPhone] = 'APPT_MAIN_MENU'; apptFilters[senderPhone] = {}; return msg.reply(renderApptMainMenu()); }
-                if (currentState === 'ADMIN_APPT_DOCTOR') { userState[senderPhone] = 'ADMIN_APPT_TARGET'; return msg.reply(renderAdminApptTarget()); }
-                if (currentState === 'APPT_DATE_PROMPT') { userState[senderPhone] = 'ADMIN_APPT_TARGET'; return msg.reply(renderAdminApptTarget()); }
-                if (currentState === 'DAILY_DOCTOR_SELECT') { userState[senderPhone] = 'DAILY_CLINIC_SELECT'; return msg.reply(renderClinicMenu('التقرير المالي (PDF)')); }
-                if (currentState === 'DAILY_DOCTOR_SPECIFIC') { userState[senderPhone] = 'DAILY_CLINIC_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)')); }
-                if (currentState === 'DAILY_DATE_MENU') {
-                    if (currentUser.permission === 'مسؤول' || currentUser.permission === 'إداري') {
-                        if (dailyFilters[senderPhone]?.doctor && dailyFilters[senderPhone].doctor !== 'الكل') { userState[senderPhone] = 'DAILY_DOCTOR_SPECIFIC'; return msg.reply(renderDoctorsListMenu()); }
-                        else { userState[senderPhone] = 'DAILY_DOCTOR_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)')); }
-                    } else { userState[senderPhone] = 'MENU'; return msg.reply(renderMainMenu(currentUser)); }
-                }
-                if (currentState === 'DAILY_CUSTOM_DATE_INPUT') { userState[senderPhone] = 'DAILY_DATE_MENU'; return msg.reply(renderDateRangeMenu('التقرير', dailyFilters[senderPhone]?.doctor ? `د. ${dailyFilters[senderPhone].doctor}` : 'الجميع')); }
-                if (currentState === 'FINANCIAL_CLINIC_SELECT') { userState[senderPhone] = 'MENU'; return msg.reply(renderMainMenu(currentUser)); }
-                if (currentState === 'FINANCIAL_DOCTOR_SELECT') { userState[senderPhone] = 'FINANCIAL_CLINIC_SELECT'; return msg.reply(renderClinicMenu('التقرير المالي (PDF)')); }
-                if (currentState === 'FINANCIAL_DOCTOR_SPECIFIC') { userState[senderPhone] = 'FINANCIAL_DOCTOR_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)')); }
-                if (currentState === 'FINANCIAL_DATE_MENU') {
-                    if (financialFilters[senderPhone]?.doctor && financialFilters[senderPhone].doctor !== 'الكل') { userState[senderPhone] = 'FINANCIAL_DOCTOR_SPECIFIC'; return msg.reply(renderDoctorsListMenu()); }
-                    else { userState[senderPhone] = 'FINANCIAL_DOCTOR_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)')); }
-                }
-                if (currentState === 'FINANCIAL_CUSTOM_DATE_INPUT') { userState[senderPhone] = 'FINANCIAL_DATE_MENU'; return msg.reply(renderDateRangeMenu('التقرير المالي', financialFilters[senderPhone]?.doctor ? `د. ${financialFilters[senderPhone].doctor}` : 'الجميع')); }
-                if (currentState === 'DEBT_CLINIC_SELECT') { userState[senderPhone] = 'MENU'; return msg.reply(renderMainMenu(currentUser)); }
-                if (currentState === 'DEBT_DATE_MENU') { userState[senderPhone] = 'DEBT_CLINIC_SELECT'; return msg.reply(renderClinicMenu('تقرير الديون')); }
-                if (currentState === 'DEBT_CUSTOM_DATE_INPUT') { userState[senderPhone] = 'DEBT_DATE_MENU'; return msg.reply(renderDateRangeMenu('تقرير الديون', financialFilters[senderPhone]?.clinic || 'الجميع')); }
+            if (!pendingAIRreplies[senderPhone]) pendingAIRreplies[senderPhone] = { messages: [], timer: null };
+            pendingAIRreplies[senderPhone].messages.push(text);
+            clearTimeout(pendingAIRreplies[senderPhone].timer);
+            pendingAIRreplies[senderPhone].timer = setTimeout(async () => {
+                try {
+                    let orthoDate = new Date('2026-09-12T00:00:00'); const todayDate = new Date(); todayDate.setHours(0, 0, 0, 0); 
+                    while (orthoDate < todayDate) { orthoDate.setDate(orthoDate.getDate() + 14); }
+                    const oDay = String(orthoDate.getDate()).padStart(2, '0'); const oMonth = String(orthoDate.getMonth() + 1).padStart(2, '0'); const oYear = orthoDate.getFullYear();
+                    const nextOrthoDateStr = `${oDay}/${oMonth}/${oYear}`;
+                    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+                    const fullPatientMessage = pendingAIRreplies[senderPhone].messages.join(' \n');
+                    let customClinicInfo = fs.existsSync('ai_info.txt') ? fs.readFileSync('ai_info.txt', 'utf8') : 'العيادة تعمل يومياً من 8 صباحاً للرابعة عصراً.';
+                    const prompt = `أنت سكرتير افتراضي ذكي لعيادات طب الأسنان.\nرسالة المريض: "${fullPatientMessage}"\nتعليمات العيادة: ${customClinicInfo}\nملاحظة حاسبة المواعيد: مواعيد تقويم الأسنان المتاحة القادمة هي يوم (${nextOrthoDateStr}) من الساعة 10:00 صباحاً حتى 2:00 مساءً. (أخبر المريض بهذا التاريخ إذا سأل عن التقويم).\nأجب باختصار شديد وبلهجة شامية مهنية ومحترمة.`;
+                    const result = await model.generateContent(prompt);
+                    client.sendMessage(msg.from, result.response.text()); delete pendingAIRreplies[senderPhone];
+                } catch (err) {}
+            }, 60000); 
+            return; 
+        }
+
+        if (!text) return;
+        if (text === 'استعلام' || text === 'إستعلام') { userState[senderPhone] = 'MENU'; userSelectedQueue[senderPhone] = []; dailyFilters[senderPhone] = {}; financialFilters[senderPhone] = {}; return msg.reply(renderMainMenu(currentUser)); }
+        const isBack = (text === '0' || text === 'رجوع' || text === 'الرجوع' || text === 'خروج');
+        if (isBack) {
+            const currentState = userState[senderPhone];
+            if (!currentState || currentState === 'MENU') { userState[senderPhone] = 'MENU'; return msg.reply(renderMainMenu(currentUser)); }
+            if (currentState === 'PAT_MGMT_MENU') { userState[senderPhone] = 'MENU'; delete patientForm[senderPhone]; return msg.reply(renderMainMenu(currentUser)); }
+            if (typeof currentState === 'string' && currentState.startsWith('PAT_')) { userState[senderPhone] = 'PAT_MGMT_MENU'; patientForm[senderPhone] = {}; return msg.reply(renderPatientMgmtMenu()); }
+            if (['WAITING_NAME', 'APPT_MAIN_MENU', 'CLINICAL_SINGLE_INPUT', 'QUEUE_SEARCH_INPUT', 'QUEUE_ACTION_MENU', 'DAILY_CLINIC_SELECT', 'FINANCIAL_CLINIC_SELECT', 'DEBT_CLINIC_SELECT', 'WAITING_AI_INFO'].includes(currentState)) { userState[senderPhone] = 'MENU'; userSelectedQueue[senderPhone] = []; dailyFilters[senderPhone] = {}; financialFilters[senderPhone] = {}; return msg.reply(renderMainMenu(currentUser)); }
+            if (currentState === 'CLINICAL_SINGLE_DATE_MENU') { userState[senderPhone] = 'CLINICAL_SINGLE_INPUT'; delete userStateData[senderPhone]; return msg.reply('🔤 الرجاء إرسال *اسم المريض*:\n*(أرسل "0" للرجوع)*'); }
+            if (currentState === 'CLINICAL_SINGLE_CUSTOM_DATE' || currentState === 'CLINICAL_SINGLE_ACTION') { userState[senderPhone] = 'CLINICAL_SINGLE_DATE_MENU'; return msg.reply(renderPatientDateRangeMenu(userStateData[senderPhone].patient.name)); }
+            if (currentState === 'CLINICAL_SINGLE_SELECT') { userState[senderPhone] = 'CLINICAL_SINGLE_INPUT'; delete userSearchResults[senderPhone]; return msg.reply('🔤 الرجاء إرسال *اسم المريض*:\n*(أرسل "0" للرجوع)*'); }
+            if (currentState === 'QUEUE_SELECT_PATIENT') { userState[senderPhone] = 'QUEUE_SEARCH_INPUT'; delete userSearchResults[senderPhone]; return msg.reply('🔤 الرجاء إرسال *اسم المريض*:\n*(أرسل "0" للرجوع)*'); }
+            if (currentState === 'APPT_PATIENT_SEARCH_INPUT') { userState[senderPhone] = 'APPT_MAIN_MENU'; return msg.reply(renderApptMainMenu()); }
+            if (currentState === 'APPT_PATIENT_SELECT') { userState[senderPhone] = 'APPT_PATIENT_SEARCH_INPUT'; delete userSearchResults[senderPhone]; return msg.reply('🔤 الرجاء إرسال *اسم المريض*:\n*(أرسل "0" للرجوع)*'); }
+            if (currentState === 'ADMIN_APPT_TARGET') { userState[senderPhone] = 'APPT_MAIN_MENU'; apptFilters[senderPhone] = {}; return msg.reply(renderApptMainMenu()); }
+            if (currentState === 'ADMIN_APPT_DOCTOR') { userState[senderPhone] = 'ADMIN_APPT_TARGET'; return msg.reply(renderAdminApptTarget()); }
+            if (currentState === 'APPT_DATE_PROMPT') { userState[senderPhone] = 'ADMIN_APPT_TARGET'; return msg.reply(renderAdminApptTarget()); }
+            if (currentState === 'DAILY_DOCTOR_SELECT') { userState[senderPhone] = 'DAILY_CLINIC_SELECT'; return msg.reply(renderClinicMenu('التقرير المالي (PDF)')); }
+            if (currentState === 'DAILY_DOCTOR_SPECIFIC') { userState[senderPhone] = 'DAILY_DOCTOR_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)')); }
+            if (currentState === 'DAILY_DATE_MENU') {
+                if (currentUser.permission === 'مسؤول' || currentUser.permission === 'إداري') {
+                    if (dailyFilters[senderPhone]?.doctor && dailyFilters[senderPhone].doctor !== 'الكل') { userState[senderPhone] = 'DAILY_DOCTOR_SPECIFIC'; return msg.reply(renderDoctorsListMenu()); }
+                    else { userState[senderPhone] = 'DAILY_DOCTOR_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)')); }
+                } else { userState[senderPhone] = 'MENU'; return msg.reply(renderMainMenu(currentUser)); }
+            }
+            if (currentState === 'DAILY_CUSTOM_DATE_INPUT') { userState[senderPhone] = 'DAILY_DATE_MENU'; return msg.reply(renderDateRangeMenu('التقرير', dailyFilters[senderPhone]?.doctor ? `د. ${dailyFilters[senderPhone].doctor}` : 'الجميع')); }
+            if (currentState === 'FINANCIAL_CLINIC_SELECT') { userState[senderPhone] = 'MENU'; return msg.reply(renderMainMenu(currentUser)); }
+            if (currentState === 'FINANCIAL_DOCTOR_SELECT') { userState[senderPhone] = 'FINANCIAL_CLINIC_SELECT'; return msg.reply(renderClinicMenu('التقرير المالي (PDF)')); }
+            if (currentState === 'FINANCIAL_DOCTOR_SPECIFIC') { userState[senderPhone] = 'FINANCIAL_DOCTOR_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)')); }
+            if (currentState === 'FINANCIAL_DATE_MENU') {
+                if (financialFilters[senderPhone]?.doctor && financialFilters[senderPhone].doctor !== 'الكل') { userState[senderPhone] = 'FINANCIAL_DOCTOR_SPECIFIC'; return msg.reply(renderDoctorsListMenu()); }
+                else { userState[senderPhone] = 'FINANCIAL_DOCTOR_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)')); }
+            }
+            if (currentState === 'FINANCIAL_CUSTOM_DATE_INPUT') { userState[senderPhone] = 'FINANCIAL_DATE_MENU'; return msg.reply(renderDateRangeMenu('التقرير المالي', financialFilters[senderPhone]?.doctor ? `د. ${financialFilters[senderPhone].doctor}` : 'الجميع')); }
+            if (currentState === 'DEBT_CLINIC_SELECT') { userState[senderPhone] = 'MENU'; return msg.reply(renderMainMenu(currentUser)); }
+            if (currentState === 'DEBT_DATE_MENU') { userState[senderPhone] = 'DEBT_CLINIC_SELECT'; return msg.reply(renderClinicMenu('تقرير الديون')); }
+            if (currentState === 'DEBT_CUSTOM_DATE_INPUT') { userState[senderPhone] = 'DEBT_DATE_MENU'; return msg.reply(renderDateRangeMenu('تقرير الديون', financialFilters[senderPhone]?.clinic || 'الجميع')); }
+        }
+
+        if (userState[senderPhone] === 'MENU') {
+            if (text === '1') { userState[senderPhone] = 'WAITING_NAME'; return msg.reply('🔤 الرجاء إرسال *اسم المريض* للاستعلام:\n*(أرسل "0" للرجوع)*'); }
+            else if (text === '2') { userState[senderPhone] = 'APPT_MAIN_MENU'; return msg.reply(renderApptMainMenu()); }
+            else if (text === '3') {
+                if (isAdmin) { userState[senderPhone] = 'CLINICAL_SINGLE_INPUT'; return msg.reply('🦷 *الكشف الطبي المفصل*\n\n🔤 الرجاء إرسال *اسم المريض*:\n*(أرسل "0" للرجوع)*'); } 
+                else return msg.reply('❌ عذراً، هذه الخدمة مخصصة للإدارة فقط.\n\n💡 (أرسل "0" للرجوع).');
+            }
+            else if (text === '4') { userState[senderPhone] = 'QUEUE_SEARCH_INPUT'; userSelectedQueue[senderPhone] = []; return msg.reply('📝 *تجهيز قائمة أسماء المرضى*\n\n🔤 إرسال اسم المريض الأول:'); }
+            else if (text === '5') {
+                if (isAdmin) { userState[senderPhone] = 'FINANCIAL_CLINIC_SELECT'; financialFilters[senderPhone] = {}; return msg.reply(renderClinicMenu('التقرير المالي الختامي للإدارة (PDF)')); } 
+                else { userState[senderPhone] = 'FINANCIAL_DATE_MENU'; financialFilters[senderPhone] = { clinic: 'الكل', doctor: currentUser.name }; return msg.reply(renderDateRangeMenu('التقرير المالي الخاص بك', `د. ${currentUser.name}`)); }
+            } 
+            else if (text === '6') {
+                if (isAdmin) { userState[senderPhone] = 'FINANCIAL_CLINIC_SELECT'; financialFilters[senderPhone] = {}; return msg.reply(renderClinicMenu('التقرير المالي (PDF)')); }
+                else return msg.reply('❌ عذراً، مخصصة للإدارة فقط.\n\n💡 (أرسل "0" للرجوع).');
+            } 
+            else if (text === '7') {
+                if (isAdmin) { userState[senderPhone] = 'DEBT_CLINIC_SELECT'; financialFilters[senderPhone] = {}; return msg.reply(renderClinicMenu('تقرير الديون')); }
+                else return msg.reply('❌ مخصصة للإدارة فقط.\n\n💡 (أرسل "0" للرجوع).');
+            }
+            else if (text === '8') {
+                if (isAdmin) {
+                    userState[senderPhone] = 'WAITING_AI_INFO'; let currentInfo = fs.existsSync('ai_info.txt') ? fs.readFileSync('ai_info.txt', 'utf8') : 'لا يوجد تعليمات'; return msg.reply(`🤖 *تعديل تعليمات السكرتير الذكي*\nالتعليمات الحالية:\n${currentInfo}\n\n📝 *أرسل التعليمات الجديدة:*`); } else return msg.reply('❌ عذراً، مخصصة للإدارة فقط.');
+            }
+            else if (text === '9') {
+                if (isAdmin) { userState[senderPhone] = 'PAT_MGMT_MENU'; patientForm[senderPhone] = {}; return msg.reply(renderPatientMgmtMenu()); }
+                else return msg.reply('❌ عذراً، مخصصة للإدارة فقط.');
+            }
+            else { return msg.reply('❌ اختيار غير صحيح، أرسل الرقم المطلوب من القائمة.'); }
+        }
+
+        // ==========================================
+        // 👤 إدارة بيانات المرضى (إضافة / تعديل) - للإدارة فقط
+        // ==========================================
+        if (typeof userState[senderPhone] === 'string' && userState[senderPhone].startsWith('PAT_')) {
+            if (!isAdmin) { userState[senderPhone] = 'MENU'; return msg.reply('❌ هذه الخدمة مخصصة للإدارة فقط.'); }
+            const st = userState[senderPhone];
+            if (!patientForm[senderPhone]) patientForm[senderPhone] = {};
+            const form = patientForm[senderPhone];
+
+            if (st === 'PAT_MGMT_MENU') {
+                if (text === '1') { patientForm[senderPhone] = { step: 0 }; userState[senderPhone] = 'PAT_ADD_STEP'; return msg.reply('📝 *إضافة مريض جديد*\n\n' + patientFieldPrompt('name', 'add')); }
+                if (text === '2') { userState[senderPhone] = 'PAT_EDIT_SEARCH'; return msg.reply('🔤 أرسل *اسم المريض* المراد تعديل بياناته:\n*(أرسل "0" للرجوع)*'); }
+                return msg.reply('❌ اختيار غير صحيح، أرسل الرقم المطلوب من القائمة.');
             }
 
-            if (userState[senderPhone] === 'MENU') {
-                if (text === '1') { userState[senderPhone] = 'WAITING_NAME'; return msg.reply('🔤 الرجاء إرسال *اسم المريض* للاستعلام:\n*(أرسل "0" للرجوع)*'); }
-                else if (text === '2') { userState[senderPhone] = 'APPT_MAIN_MENU'; return msg.reply(renderApptMainMenu()); }
-                else if (text === '3') {
-                    if (isAdmin) { userState[senderPhone] = 'CLINICAL_SINGLE_INPUT'; return msg.reply('🦷 *الكشف الطبي المفصل*\n\n🔤 الرجاء إرسال *اسم المريض*:\n*(أرسل "0" للرجوع)*'); } 
-                    else return msg.reply('❌ عذراً، هذه الخدمة مخصصة للإدارة فقط.\n\n💡 (أرسل "0" للرجوع).');
+            if (st === 'PAT_ADD_STEP') {
+                const field = PATIENT_ADD_STEPS[form.step || 0];
+                const v = normalizePatientFieldValue(field, text);
+                if (!v.ok) return msg.reply(v.error + '\n\n' + patientFieldPrompt(field, 'add'));
+                form[field] = v.value;
+                if (field === 'name') {
+                    const found = await searchPatientByName(v.value);
+                    form.duplicate = !!(found.matches && found.matches.some(m => normalizeArabic(m.name) === normalizeArabic(v.value)));
                 }
-                else if (text === '4') { userState[senderPhone] = 'QUEUE_SEARCH_INPUT'; userSelectedQueue[senderPhone] = []; return msg.reply('📝 *تجهيز قائمة أسماء المرضى*\n\n🔤 إرسال اسم المريض الأول:'); }
-                else if (text === '5') {
-                    if (isAdmin) { userState[senderPhone] = 'FINANCIAL_CLINIC_SELECT'; financialFilters[senderPhone] = {}; return msg.reply(renderClinicMenu('التقرير المالي الختامي للإدارة (PDF)')); } 
-                    else { userState[senderPhone] = 'FINANCIAL_DATE_MENU'; financialFilters[senderPhone] = { clinic: 'الكل', doctor: currentUser.name }; return msg.reply(renderDateRangeMenu('التقرير المالي الخاص بك', `د. ${currentUser.name}`)); }
-                } 
-                else if (text === '6') {
-                    if (isAdmin) { userState[senderPhone] = 'FINANCIAL_CLINIC_SELECT'; financialFilters[senderPhone] = {}; return msg.reply(renderClinicMenu('التقرير المالي (PDF)')); }
-                    else return msg.reply('❌ عذراً، مخصصة للإدارة فقط.\n\n💡 (أرسل "0" للرجوع).');
-                } 
-                else if (text === '7') {
-                    if (isAdmin) { userState[senderPhone] = 'DEBT_CLINIC_SELECT'; financialFilters[senderPhone] = {}; return msg.reply(renderClinicMenu('تقرير الديون')); }
-                    else return msg.reply('❌ مخصصة للإدارة فقط.\n\n💡 (أرسل "0" للرجوع).');
-                }
-                else if (text === '8') {
-                    if (isAdmin) {
-                        userState[senderPhone] = 'WAITING_AI_INFO'; let currentInfo = fs.existsSync('ai_info.txt') ? fs.readFileSync('ai_info.txt', 'utf8') : 'لا يوجد تعليمات'; return msg.reply(`🤖 *تعديل تعليمات السكرتير الذكي*\nالتعليمات الحالية:\n${currentInfo}\n\n📝 *أرسل التعليمات الجديدة:*`); } else return msg.reply('❌ عذراً، مخصصة للإدارة فقط.');
-                }
-                else if (text === '9') {
-                    if (isAdmin) { userState[senderPhone] = 'PAT_MGMT_MENU'; patientForm[senderPhone] = {}; return msg.reply(renderPatientMgmtMenu()); }
-                    else return msg.reply('❌ عذراً، مخصصة للإدارة فقط.');
-                }
-                else { return msg.reply('❌ اختيار غير صحيح، أرسل الرقم المطلوب من القائمة.'); }
+                form.step = (form.step || 0) + 1;
+                if (form.step < PATIENT_ADD_STEPS.length) return msg.reply(patientFieldPrompt(PATIENT_ADD_STEPS[form.step], 'add'));
+                userState[senderPhone] = 'PAT_ADD_CONFIRM';
+                let sum = `📋 *مراجعة بيانات المريض الجديد*\n═══════════════════\n`;
+                sum += `👤 الاسم: ${form.name}\n📱 الجوال: ${form.phone || '-'}\n📱 جوال 2: ${form.phone2 || '-'}\n⚧ الجنس: ${form.gender || '-'}\n🏥 العيادة: ${form.clinic || '-'}\n🎂 الميلاد: ${form.birth ? formatDisplayDate(form.birth) : '-'}\n`;
+                if (form.duplicate) sum += `\n⚠️ *تنبيه:* يوجد مريض مسجل بنفس الاسم مسبقاً!\n`;
+                sum += `\n1️⃣ - حفظ ✅\n2️⃣ - إلغاء ❌\n\n*أرسل الرقم المطلوب:*`;
+                return msg.reply(sum);
             }
 
-            if (typeof userState[senderPhone] === 'string' && userState[senderPhone].startsWith('PAT_')) {
-                if (!isAdmin) { userState[senderPhone] = 'MENU'; return msg.reply('❌ هذه الخدمة مخصصة للإدارة فقط.'); }
-                const st = userState[senderPhone];
-                if (!patientForm[senderPhone]) patientForm[senderPhone] = {};
-                const form = patientForm[senderPhone];
-
-                if (st === 'PAT_MGMT_MENU') {
-                    if (text === '1') { patientForm[senderPhone] = { step: 0 }; userState[senderPhone] = 'PAT_ADD_STEP'; return msg.reply('📝 *إضافة مريض جديد*\n\n' + patientFieldPrompt('name', 'add')); }
-                    if (text === '2') { userState[senderPhone] = 'PAT_EDIT_SEARCH'; return msg.reply('🔤 أرسل *اسم المريض* المراد تعديل بياناته:\n*(أرسل "0" للرجوع)*'); }
-                    return msg.reply('❌ اختيار غير صحيح، أرسل الرقم المطلوب من القائمة.');
-                }
-
-                if (st === 'PAT_ADD_STEP') {
-                    const field = PATIENT_ADD_STEPS[form.step || 0];
-                    const v = normalizePatientFieldValue(field, text);
-                    if (!v.ok) return msg.reply(v.error + '\n\n' + patientFieldPrompt(field, 'add'));
-                    form[field] = v.value;
-                    if (field === 'name') {
-                        const found = await searchPatientByName(v.value);
-                        form.duplicate = !!(found.matches && found.matches.some(m => normalizeArabic(m.name) === normalizeArabic(v.value)));
-                    }
-                    form.step = (form.step || 0) + 1;
-                    if (form.step < PATIENT_ADD_STEPS.length) return msg.reply(patientFieldPrompt(PATIENT_ADD_STEPS[form.step], 'add'));
-                    userState[senderPhone] = 'PAT_ADD_CONFIRM';
-                    let sum = `📋 *مراجعة بيانات المريض الجديد*\n═══════════════════\n`;
-                    sum += `👤 الاسم: ${form.name}\n📱 الجوال: ${form.phone || '-'}\n📱 جوال 2: ${form.phone2 || '-'}\n⚧ الجنس: ${form.gender || '-'}\n🏥 العيادة: ${form.clinic || '-'}\n🎂 الميلاد: ${form.birth ? formatDisplayDate(form.birth) : '-'}\n`;
-                    if (form.duplicate) sum += `\n⚠️ *تنبيه:* يوجد مريض مسجل بنفس الاسم مسبقاً!\n`;
-                    sum += `\n1️⃣ - حفظ ✅\n2️⃣ - إلغاء ❌\n\n*أرسل الرقم المطلوب:*`;
-                    return msg.reply(sum);
-                }
-
-                if (st === 'PAT_ADD_CONFIRM') {
-                    if (text === '2') { userState[senderPhone] = 'PAT_MGMT_MENU'; patientForm[senderPhone] = {}; return msg.reply('❌ تم إلغاء الإضافة.\n\n' + renderPatientMgmtMenu()); }
-                    if (text !== '1') return msg.reply('❌ اختيار غير صحيح، أرسل 1 للحفظ أو 2 للإلغاء.');
-                    msg.reply('⏳ جاري الحفظ...');
-                    try {
-                        const newId = await addPatientToSheet(form);
-                        const savedName = form.name;
-                        userState[senderPhone] = 'PAT_MGMT_MENU'; patientForm[senderPhone] = {};
-                        return msg.reply(`✅ تمت إضافة المريض *${savedName}* بنجاح.\n🆔 ${newId}\n\n` + renderPatientMgmtMenu());
-                    } catch (err) { console.error('Add patient error:', err); return msg.reply(friendlySheetsError(err)); }
-                }
-
-                if (st === 'PAT_EDIT_SEARCH') {
-                    msg.reply('⏳ جاري البحث...');
-                    const result = await searchPatientByName(text);
-                    if (result.error) return msg.reply(result.error);
-                    if (result.matches.length === 0) return msg.reply('❌ لم يتم العثور على مريض بهذا الاسم.');
-                    if (result.matches.length === 1) { form.patient = result.matches[0]; userState[senderPhone] = 'PAT_EDIT_FIELD'; return msg.reply(renderPatientEditMenu(form.patient)); }
-                    form.matches = result.matches.slice(0, 30); userState[senderPhone] = 'PAT_EDIT_SELECT';
-                    let listMsg = `✅ *تم العثور على أكثر من مريض:*\n\n`; form.matches.forEach((pt, i) => listMsg += `*${i + 1}.* ${pt.name} (${pt.phone})\n`);
-                    return msg.reply(listMsg + `\n*0.* ↩️ الرجوع`);
-                }
-
-                if (st === 'PAT_EDIT_SELECT') {
-                    const i = parseInt(text) - 1;
-                    if (isNaN(i) || i < 0 || !form.matches || i >= form.matches.length) return msg.reply('❌ غير صحيح.');
-                    form.patient = form.matches[i]; userState[senderPhone] = 'PAT_EDIT_FIELD';
-                    return msg.reply(renderPatientEditMenu(form.patient));
-                }
-
-                if (st === 'PAT_EDIT_FIELD') {
-                    const fieldMap = { '1': 'name', '2': 'phone', '3': 'phone2', '4': 'gender', '5': 'clinic', '6': 'birth' };
-                    const field = fieldMap[text];
-                    if (!field) return msg.reply('❌ اختيار غير صحيح، أرسل رقماً من 1 إلى 6.');
-                    form.field = field; userState[senderPhone] = 'PAT_EDIT_VALUE';
-                    return msg.reply(`✏️ تعديل *${PATIENT_FIELD_LABEL[field]}* للمريض ${form.patient.name}\n\n` + patientFieldPrompt(field, 'edit'));
-                }
-
-                if (st === 'PAT_EDIT_VALUE') {
-                    const field = form.field;
-                    const v = normalizePatientFieldValue(field, text);
-                    if (!v.ok) return msg.reply(v.error + '\n\n' + patientFieldPrompt(field, 'edit'));
-                    msg.reply('⏳ جاري الحفظ...');
-                    try {
-                        await updatePatientField(form.patient.id, field, v.value);
-                        if (field === 'name') form.patient.name = v.value;
-                        else if (field === 'phone') form.patient.phone = v.value || 'غير متوفر';
-                        else if (field === 'clinic') form.patient.clinic = v.value || 'عيادة الأسنان';
-                        else if (field === 'birth') form.patient.birth = v.value;
-                        userState[senderPhone] = 'PAT_EDIT_FIELD';
-                        return msg.reply(`✅ تم تحديث *${PATIENT_FIELD_LABEL[field]}* بنجاح.\n\n` + renderPatientEditMenu(form.patient));
-                    } catch (err) { console.error('Update patient error:', err); return msg.reply(friendlySheetsError(err)); }
-                }
+            if (st === 'PAT_ADD_CONFIRM') {
+                if (text === '2') { userState[senderPhone] = 'PAT_MGMT_MENU'; patientForm[senderPhone] = {}; return msg.reply('❌ تم إلغاء الإضافة.\n\n' + renderPatientMgmtMenu()); }
+                if (text !== '1') return msg.reply('❌ اختيار غير صحيح، أرسل 1 للحفظ أو 2 للإلغاء.');
+                msg.reply('⏳ جاري الحفظ...');
+                try {
+                    const newId = await addPatientToSheet(form);
+                    const savedName = form.name;
+                    userState[senderPhone] = 'PAT_MGMT_MENU'; patientForm[senderPhone] = {};
+                    return msg.reply(`✅ تمت إضافة المريض *${savedName}* بنجاح.\n🆔 ${newId}\n(سيظهر في تطبيق AppSheet بعد المزامنة)\n\n` + renderPatientMgmtMenu());
+                } catch (err) { console.error('Add patient error:', err); return msg.reply(friendlySheetsError(err)); }
             }
 
-            if (userState[senderPhone] === 'WAITING_NAME') {
-                msg.reply('⏳ جاري البحث...'); const result = await searchPatientByName(text);
-                if (result.error) return msg.reply(result.error); if (result.matches.length === 0) return msg.reply('❌ لم يتم العثور على مريض.');
-                if (result.matches.length === 1) { userState[senderPhone] = 'IDLE'; return msg.reply(`✅ *المريض:* ${result.matches[0].name}\n📱 *الجوال:* ${result.matches[0].phone}\n\n💡 (أرسل "استعلام" للعودة).`); }
-                userState[senderPhone] = 'WAITING_SELECTION'; userSearchResults[senderPhone] = result.matches;
-                let listMsg = `✅ *مريض متعدد:*\n\n`; result.matches.forEach((p, i) => listMsg += `*${i + 1}.* ${p.name}\n`); return msg.reply(listMsg + `\n*0.* ↩️ الرجوع`);
-            }
-            if (userState[senderPhone] === 'WAITING_SELECTION') {
-                const matches = userSearchResults[senderPhone]; const i = parseInt(text) - 1; if (isNaN(i) || i < 0 || i >= matches.length) return msg.reply('❌ غير صحيح.');
-                userState[senderPhone] = 'IDLE'; delete userSearchResults[senderPhone]; return msg.reply(`✅ *المريض:* ${matches[i].name}\n📱 *الجوال:* ${matches[i].phone}\n\n💡 (أرسل "استعلام" للعودة).`);
-            }
-            if (userState[senderPhone] === 'WAITING_AI_INFO') {
-                fs.writeFileSync('ai_info.txt', text, 'utf8'); userState[senderPhone] = 'IDLE'; return msg.reply('✅ تم تحديث تعليمات الذكاء الاصطناعي بنجاح!\n💡 (أرسل "استعلام" للعودة).');
+            if (st === 'PAT_EDIT_SEARCH') {
+                msg.reply('⏳ جاري البحث...');
+                const result = await searchPatientByName(text);
+                if (result.error) return msg.reply(result.error);
+                if (result.matches.length === 0) return msg.reply('❌ لم يتم العثور على مريض بهذا الاسم.');
+                if (result.matches.length === 1) { form.patient = result.matches[0]; userState[senderPhone] = 'PAT_EDIT_FIELD'; return msg.reply(renderPatientEditMenu(form.patient)); }
+                form.matches = result.matches.slice(0, 30); userState[senderPhone] = 'PAT_EDIT_SELECT';
+                let listMsg = `✅ *تم العثور على أكثر من مريض:*\n\n`; form.matches.forEach((pt, i) => listMsg += `*${i + 1}.* ${pt.name} (${pt.phone})\n`);
+                if (result.matches.length > 30) listMsg += `\n... (أول 30 نتيجة، اكتب اسماً أدق لتضييق البحث)\n`;
+                return msg.reply(listMsg + `\n*0.* ↩️ الرجوع`);
             }
 
-            if (userState[senderPhone] === 'CLINICAL_SINGLE_INPUT') {
-                msg.reply('⏳ جاري البحث...'); const result = await searchPatientByName(text);
-                if (result.error) return msg.reply(result.error); if (result.matches.length === 0) return msg.reply('❌ غير موجود.');
-                if (result.matches.length === 1) { userStateData[senderPhone] = { patient: result.matches[0] }; userState[senderPhone] = 'CLINICAL_SINGLE_DATE_MENU'; return msg.reply(renderPatientDateRangeMenu(result.matches[0].name)); }
-                userState[senderPhone] = 'CLINICAL_SINGLE_SELECT'; userSearchResults[senderPhone] = result.matches;
-                let listMsg = `✅ *تم العثور على أكثر من مريض:*\n\n`; result.matches.forEach((p, i) => listMsg += `*${i + 1}.* ${p.name}\n`); return msg.reply(listMsg + `\n*0.* ↩️ الرجوع`);
+            if (st === 'PAT_EDIT_SELECT') {
+                const i = parseInt(text) - 1;
+                if (isNaN(i) || i < 0 || !form.matches || i >= form.matches.length) return msg.reply('❌ غير صحيح.');
+                form.patient = form.matches[i]; userState[senderPhone] = 'PAT_EDIT_FIELD';
+                return msg.reply(renderPatientEditMenu(form.patient));
             }
-            if (userState[senderPhone] === 'CLINICAL_SINGLE_SELECT') {
-                const matches = userSearchResults[senderPhone]; const i = parseInt(text) - 1; if (isNaN(i) || i < 0 || i >= matches.length) return msg.reply('❌ غير صحيح.');
-                userStateData[senderPhone] = { patient: matches[i] }; userState[senderPhone] = 'CLINICAL_SINGLE_DATE_MENU'; delete userSearchResults[senderPhone]; return msg.reply(renderPatientDateRangeMenu(matches[i].name));
+
+            if (st === 'PAT_EDIT_FIELD') {
+                const fieldMap = { '1': 'name', '2': 'phone', '3': 'phone2', '4': 'gender', '5': 'clinic', '6': 'birth' };
+                const field = fieldMap[text];
+                if (!field) return msg.reply('❌ اختيار غير صحيح، أرسل رقماً من 1 إلى 6.');
+                form.field = field; userState[senderPhone] = 'PAT_EDIT_VALUE';
+                return msg.reply(`✏️ تعديل *${PATIENT_FIELD_LABEL[field]}* للمريض ${form.patient.name}\n\n` + patientFieldPrompt(field, 'edit'));
             }
-            if (userState[senderPhone] === 'CLINICAL_SINGLE_DATE_MENU') {
-                if (['1', '2', '4'].includes(text)) {
-                    const range = getPatientDateRangeFilter(text); msg.reply(`⏳ جاري التجميع...`);
-                    const detailedRes = await fetchDetailedPatientSessions(userStateData[senderPhone].patient, currentUser, range);
-                    if (detailedRes.error) return msg.reply(detailedRes.error);
-                    userStateData[senderPhone].clinicalRes = detailedRes; userState[senderPhone] = 'CLINICAL_SINGLE_ACTION'; return msg.reply(formatDetailedReport(userStateData[senderPhone].patient, detailedRes, currentUser));
-                } else if (text === '3') { userState[senderPhone] = 'CLINICAL_SINGLE_CUSTOM_DATE'; return msg.reply('📅 أرسل الفترة المطلوبة (مثال: 01/09/2026 - 15/09/2026):'); } else return msg.reply('❌ غير صحيح.');
+
+            if (st === 'PAT_EDIT_VALUE') {
+                const field = form.field;
+                const v = normalizePatientFieldValue(field, text);
+                if (!v.ok) return msg.reply(v.error + '\n\n' + patientFieldPrompt(field, 'edit'));
+                msg.reply('⏳ جاري الحفظ...');
+                try {
+                    await updatePatientField(form.patient.id, field, v.value);
+                    if (field === 'name') form.patient.name = v.value;
+                    else if (field === 'phone') form.patient.phone = v.value || 'غير متوفر';
+                    else if (field === 'clinic') form.patient.clinic = v.value || 'عيادة الأسنان';
+                    else if (field === 'birth') form.patient.birth = v.value;
+                    userState[senderPhone] = 'PAT_EDIT_FIELD';
+                    return msg.reply(`✅ تم تحديث *${PATIENT_FIELD_LABEL[field]}* بنجاح.\n\n` + renderPatientEditMenu(form.patient));
+                } catch (err) { console.error('Update patient error:', err); return msg.reply(friendlySheetsError(err)); }
             }
-            if (userState[senderPhone] === 'CLINICAL_SINGLE_CUSTOM_DATE') {
-                const range = getPatientDateRangeFilter('3', text); if (!range) return msg.reply('❌ صيغة التاريخ غير صحيحة.');
-                msg.reply(`⏳ جاري التجميع...`); const detailedRes = await fetchDetailedPatientSessions(userStateData[senderPhone].patient, currentUser, range);
+        }
+
+        if (userState[senderPhone] === 'WAITING_NAME') {
+            msg.reply('⏳ جاري البحث...'); const result = await searchPatientByName(text);
+            if (result.error) return msg.reply(result.error); if (result.matches.length === 0) return msg.reply('❌ لم يتم العثور على مريض.');
+            if (result.matches.length === 1) { userState[senderPhone] = 'IDLE'; return msg.reply(`✅ *المريض:* ${result.matches[0].name}\n📱 *الجوال:* ${result.matches[0].phone}\n\n💡 (أرسل "استعلام" للعودة).`); }
+            userState[senderPhone] = 'WAITING_SELECTION'; userSearchResults[senderPhone] = result.matches;
+            let listMsg = `✅ *مريض متعدد:*\n\n`; result.matches.forEach((p, i) => listMsg += `*${i + 1}.* ${p.name}\n`); return msg.reply(listMsg + `\n*0.* ↩️ الرجوع`);
+        }
+        if (userState[senderPhone] === 'WAITING_SELECTION') {
+            const matches = userSearchResults[senderPhone]; const i = parseInt(text) - 1; if (isNaN(i) || i < 0 || i >= matches.length) return msg.reply('❌ غير صحيح.');
+            userState[senderPhone] = 'IDLE'; delete userSearchResults[senderPhone]; return msg.reply(`✅ *المريض:* ${matches[i].name}\n📱 *الجوال:* ${matches[i].phone}\n\n💡 (أرسل "استعلام" للعودة).`);
+        }
+        if (userState[senderPhone] === 'WAITING_AI_INFO') {
+            fs.writeFileSync('ai_info.txt', text, 'utf8'); userState[senderPhone] = 'IDLE'; return msg.reply('✅ تم تحديث تعليمات الذكاء الاصطناعي بنجاح!\n💡 (أرسل "استعلام" للعودة).');
+        }
+
+        if (userState[senderPhone] === 'CLINICAL_SINGLE_INPUT') {
+            msg.reply('⏳ جاري البحث...'); const result = await searchPatientByName(text);
+            if (result.error) return msg.reply(result.error); if (result.matches.length === 0) return msg.reply('❌ غير موجود.');
+            if (result.matches.length === 1) { userStateData[senderPhone] = { patient: result.matches[0] }; userState[senderPhone] = 'CLINICAL_SINGLE_DATE_MENU'; return msg.reply(renderPatientDateRangeMenu(result.matches[0].name)); }
+            userState[senderPhone] = 'CLINICAL_SINGLE_SELECT'; userSearchResults[senderPhone] = result.matches;
+            let listMsg = `✅ *تم العثور على أكثر من مريض:*\n\n`; result.matches.forEach((p, i) => listMsg += `*${i + 1}.* ${p.name}\n`); return msg.reply(listMsg + `\n*0.* ↩️ الرجوع`);
+        }
+        if (userState[senderPhone] === 'CLINICAL_SINGLE_SELECT') {
+            const matches = userSearchResults[senderPhone]; const i = parseInt(text) - 1; if (isNaN(i) || i < 0 || i >= matches.length) return msg.reply('❌ غير صحيح.');
+            userStateData[senderPhone] = { patient: matches[i] }; userState[senderPhone] = 'CLINICAL_SINGLE_DATE_MENU'; delete userSearchResults[senderPhone]; return msg.reply(renderPatientDateRangeMenu(matches[i].name));
+        }
+        if (userState[senderPhone] === 'CLINICAL_SINGLE_DATE_MENU') {
+            if (['1', '2', '4'].includes(text)) {
+                const range = getPatientDateRangeFilter(text); msg.reply(`⏳ جاري التجميع...`);
+                const detailedRes = await fetchDetailedPatientSessions(userStateData[senderPhone].patient, currentUser, range);
                 if (detailedRes.error) return msg.reply(detailedRes.error);
                 userStateData[senderPhone].clinicalRes = detailedRes; userState[senderPhone] = 'CLINICAL_SINGLE_ACTION'; return msg.reply(formatDetailedReport(userStateData[senderPhone].patient, detailedRes, currentUser));
-            }
-            if (userState[senderPhone] === 'CLINICAL_SINGLE_ACTION') {
-                if (text === '1') {
-                    const data = userStateData[senderPhone]; if (!data) return msg.reply('❌ انتهت الجلسة.');
-                    msg.reply('⏳ جاري إنشاء الفاتورة (PDF)...');
-                    try {
-                        const pdfBuffer = await generatePDFReport(data.patient, data.clinicalRes, currentUser);
-                        await sendPdf(client, msg.from, pdfBuffer, `Medical_Invoice_${Date.now()}.pdf`);
-                    } catch (err) { return msg.reply('⚠️ خطأ في إصدار الـ PDF'); }
-                } else return msg.reply('❌ غير صحيح.');
-            }
+            } else if (text === '3') { userState[senderPhone] = 'CLINICAL_SINGLE_CUSTOM_DATE'; return msg.reply('📅 أرسل الفترة المطلوبة (مثال: 01/09/2026 - 15/09/2026):'); } else return msg.reply('❌ غير صحيح.');
+        }
+        if (userState[senderPhone] === 'CLINICAL_SINGLE_CUSTOM_DATE') {
+            const range = getPatientDateRangeFilter('3', text); if (!range) return msg.reply('❌ صيغة التاريخ غير صحيحة.');
+            msg.reply(`⏳ جاري التجميع...`); const detailedRes = await fetchDetailedPatientSessions(userStateData[senderPhone].patient, currentUser, range);
+            if (detailedRes.error) return msg.reply(detailedRes.error);
+            userStateData[senderPhone].clinicalRes = detailedRes; userState[senderPhone] = 'CLINICAL_SINGLE_ACTION'; return msg.reply(formatDetailedReport(userStateData[senderPhone].patient, detailedRes, currentUser));
+        }
+        if (userState[senderPhone] === 'CLINICAL_SINGLE_ACTION') {
+            if (text === '1') {
+                const data = userStateData[senderPhone]; if (!data) return msg.reply('❌ انتهت الجلسة.');
+                msg.reply('⏳ جاري إنشاء الفاتورة (PDF)...');
+                try {
+                    const pdfBuffer = await generatePDFReport(data.patient, data.clinicalRes, currentUser);
+                    await sendPdf(client, msg.from, pdfBuffer, `Medical_Invoice_${Date.now()}.pdf`);
+                } catch (err) { return msg.reply('⚠️ خطأ في إصدار الـ PDF'); }
+            } else return msg.reply('❌ غير صحيح.');
+        }
 
-            if (userState[senderPhone] === 'FINANCIAL_CLINIC_SELECT') {
-                if (text === '1') financialFilters[senderPhone].clinic = 'ناصر'; else if (text === '2') financialFilters[senderPhone].clinic = 'روني'; else if (text === '3') financialFilters[senderPhone].clinic = 'الكل'; else return msg.reply('❌ غير صحيح.');
-                userState[senderPhone] = 'FINANCIAL_DOCTOR_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)'));
-            }
-            if (userState[senderPhone] === 'FINANCIAL_DOCTOR_SELECT') {
-                if (text === '1') { financialFilters[senderPhone].doctor = 'الكل'; userState[senderPhone] = 'FINANCIAL_DATE_MENU'; return msg.reply(renderDateRangeMenu('التقرير المالي', 'جميع الأطباء')); }
-                else if (text === '2') { userState[senderPhone] = 'FINANCIAL_DOCTOR_SPECIFIC'; return msg.reply(renderDoctorsListMenu()); } else return msg.reply('❌ غير صحيح.');
-            }
-            if (userState[senderPhone] === 'FINANCIAL_DOCTOR_SPECIFIC') {
-                const idx = parseInt(text) - 1; if (isNaN(idx) || idx < 0 || idx >= DOCTORS_LIST.length) return msg.reply('❌ غير صحيح.');
-                financialFilters[senderPhone].doctor = DOCTORS_LIST[idx]; userState[senderPhone] = 'FINANCIAL_DATE_MENU'; return msg.reply(renderDateRangeMenu('التقرير المالي', `د. ${DOCTORS_LIST[idx]}`));
-            }
-            if (userState[senderPhone] === 'FINANCIAL_DATE_MENU') {
-                if (['1', '2', '4'].includes(text)) {
-                    financialFilters[senderPhone].dateRange = getDateRangeFilter(text); msg.reply('⏳ جاري استخراج التقرير المالي...');
-                    const financialRes = await fetchFinancialReportAdmin(financialFilters[senderPhone], currentUser);
-                    userState[senderPhone] = 'IDLE'; delete financialFilters[senderPhone];
-                    if (financialRes.error) return msg.reply(financialRes.error);
-                    try {
-                        const pdfBuffer = await generateClinicFinancialPDF(financialRes);
-                        await sendPdf(client, msg.from, pdfBuffer, `Financial_${Date.now()}.pdf`);
-                    } catch (err) { return msg.reply('⚠️ خطأ في PDF.'); }
-                } else if (text === '3') { userState[senderPhone] = 'FINANCIAL_CUSTOM_DATE_INPUT'; return msg.reply('📅 أرسل الفترة المطلوبة (مثال: 01/09/2026 - 15/09/2026):'); } else return msg.reply('❌ غير صحيح.');
-            }
-            if (userState[senderPhone] === 'FINANCIAL_CUSTOM_DATE_INPUT') {
-                financialFilters[senderPhone].dateRange = getDateRangeFilter('3', text); msg.reply('⏳ جاري الإعداد...');
+        if (userState[senderPhone] === 'FINANCIAL_CLINIC_SELECT') {
+            if (text === '1') financialFilters[senderPhone].clinic = 'ناصر'; else if (text === '2') financialFilters[senderPhone].clinic = 'روني'; else if (text === '3') financialFilters[senderPhone].clinic = 'الكل'; else return msg.reply('❌ غير صحيح.');
+            userState[senderPhone] = 'FINANCIAL_DOCTOR_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)'));
+        }
+        if (userState[senderPhone] === 'FINANCIAL_DOCTOR_SELECT') {
+            if (text === '1') { financialFilters[senderPhone].doctor = 'الكل'; userState[senderPhone] = 'FINANCIAL_DATE_MENU'; return msg.reply(renderDateRangeMenu('التقرير المالي', 'جميع الأطباء')); }
+            else if (text === '2') { userState[senderPhone] = 'FINANCIAL_DOCTOR_SPECIFIC'; return msg.reply(renderDoctorsListMenu()); } else return msg.reply('❌ غير صحيح.');
+        }
+        if (userState[senderPhone] === 'FINANCIAL_DOCTOR_SPECIFIC') {
+            const idx = parseInt(text) - 1; if (isNaN(idx) || idx < 0 || idx >= DOCTORS_LIST.length) return msg.reply('❌ غير صحيح.');
+            financialFilters[senderPhone].doctor = DOCTORS_LIST[idx]; userState[senderPhone] = 'FINANCIAL_DATE_MENU'; return msg.reply(renderDateRangeMenu('التقرير المالي', `د. ${DOCTORS_LIST[idx]}`));
+        }
+        if (userState[senderPhone] === 'FINANCIAL_DATE_MENU') {
+            if (['1', '2', '4'].includes(text)) {
+                financialFilters[senderPhone].dateRange = getDateRangeFilter(text); msg.reply('⏳ جاري استخراج التقرير المالي...');
                 const financialRes = await fetchFinancialReportAdmin(financialFilters[senderPhone], currentUser);
                 userState[senderPhone] = 'IDLE'; delete financialFilters[senderPhone];
                 if (financialRes.error) return msg.reply(financialRes.error);
@@ -1851,107 +1913,133 @@ mongoose.connect(MONGODB_URI).then(() => {
                     const pdfBuffer = await generateClinicFinancialPDF(financialRes);
                     await sendPdf(client, msg.from, pdfBuffer, `Financial_${Date.now()}.pdf`);
                 } catch (err) { return msg.reply('⚠️ خطأ في PDF.'); }
-            }
+            } else if (text === '3') { userState[senderPhone] = 'FINANCIAL_CUSTOM_DATE_INPUT'; return msg.reply('📅 أرسل الفترة المطلوبة (مثال: 01/09/2026 - 15/09/2026):'); } else return msg.reply('❌ غير صحيح.');
+        }
+        if (userState[senderPhone] === 'FINANCIAL_CUSTOM_DATE_INPUT') {
+            financialFilters[senderPhone].dateRange = getDateRangeFilter('3', text); msg.reply('⏳ جاري الإعداد...');
+            const financialRes = await fetchFinancialReportAdmin(financialFilters[senderPhone], currentUser);
+            userState[senderPhone] = 'IDLE'; delete financialFilters[senderPhone];
+            if (financialRes.error) return msg.reply(financialRes.error);
+            try {
+                const pdfBuffer = await generateClinicFinancialPDF(financialRes);
+                await sendPdf(client, msg.from, pdfBuffer, `Financial_${Date.now()}.pdf`);
+            } catch (err) { return msg.reply('⚠️ خطأ في PDF.'); }
+        }
 
-            if (userState[senderPhone] === 'DEBT_CLINIC_SELECT') {
-                if (text === '1') financialFilters[senderPhone].clinic = 'ناصر'; else if (text === '2') financialFilters[senderPhone].clinic = 'روني'; else if (text === '3') financialFilters[senderPhone].clinic = 'الكل'; else return msg.reply('❌ غير صحيح.');
-                userState[senderPhone] = 'DEBT_DATE_MENU'; return msg.reply(renderDateRangeMenu('تقرير الديون', financialFilters[senderPhone].clinic));
-            }
-            if (userState[senderPhone] === 'DEBT_DATE_MENU') {
-                if (['1', '2', '4'].includes(text)) {
-                    financialFilters[senderPhone].dateRange = getDateRangeFilter(text); msg.reply('⏳ جاري إعداد تقرير الديون (PDF)...');
-                    const debtRes = await fetchFinancialReportAdmin(financialFilters[senderPhone], currentUser);
-                    userState[senderPhone] = 'IDLE'; delete financialFilters[senderPhone];
-                    if (debtRes.error) return msg.reply(debtRes.error);
-                    try {
-                        const pdfBuffer = await generateDebtPDF(debtRes);
-                        await sendPdf(client, msg.from, pdfBuffer, `Debt_Report_${Date.now()}.pdf`);
-                    } catch (err) { return msg.reply('⚠️ حدث خطأ في PDF.'); }
-                } else if (text === '3') { userState[senderPhone] = 'DEBT_CUSTOM_DATE_INPUT'; return msg.reply('📅 أرسل الفترة المطلوبة (مثال: 01/09/2026 - 15/09/2026):'); } else return msg.reply('❌ غير صحيح.');
-            }
-            if (userState[senderPhone] === 'DEBT_CUSTOM_DATE_INPUT') {
-                financialFilters[senderPhone].dateRange = getDateRangeFilter('3', text); msg.reply('⏳ جاري الإعداد...');
+        if (userState[senderPhone] === 'DEBT_CLINIC_SELECT') {
+            if (text === '1') financialFilters[senderPhone].clinic = 'ناصر'; else if (text === '2') financialFilters[senderPhone].clinic = 'روني'; else if (text === '3') financialFilters[senderPhone].clinic = 'الكل'; else return msg.reply('❌ غير صحيح.');
+            userState[senderPhone] = 'DEBT_DATE_MENU'; return msg.reply(renderDateRangeMenu('تقرير الديون', financialFilters[senderPhone].clinic));
+        }
+        if (userState[senderPhone] === 'DEBT_DATE_MENU') {
+            if (['1', '2', '4'].includes(text)) {
+                financialFilters[senderPhone].dateRange = getDateRangeFilter(text); msg.reply('⏳ جاري إعداد تقرير الديون (PDF)...');
                 const debtRes = await fetchFinancialReportAdmin(financialFilters[senderPhone], currentUser);
                 userState[senderPhone] = 'IDLE'; delete financialFilters[senderPhone];
                 if (debtRes.error) return msg.reply(debtRes.error);
                 try {
                     const pdfBuffer = await generateDebtPDF(debtRes);
                     await sendPdf(client, msg.from, pdfBuffer, `Debt_Report_${Date.now()}.pdf`);
-                } catch (err) { return msg.reply('⚠️ خطأ في PDF.'); }
-            }
+                } catch (err) { return msg.reply('⚠️ حدث خطأ في PDF.'); }
+            } else if (text === '3') { userState[senderPhone] = 'DEBT_CUSTOM_DATE_INPUT'; return msg.reply('📅 أرسل الفترة المطلوبة (مثال: 01/09/2026 - 15/09/2026):'); } else return msg.reply('❌ غير صحيح.');
+        }
+        if (userState[senderPhone] === 'DEBT_CUSTOM_DATE_INPUT') {
+            financialFilters[senderPhone].dateRange = getDateRangeFilter('3', text); msg.reply('⏳ جاري الإعداد...');
+            const debtRes = await fetchFinancialReportAdmin(financialFilters[senderPhone], currentUser);
+            userState[senderPhone] = 'IDLE'; delete financialFilters[senderPhone];
+            if (debtRes.error) return msg.reply(debtRes.error);
+            try {
+                const pdfBuffer = await generateDebtPDF(debtRes);
+                await sendPdf(client, msg.from, pdfBuffer, `Debt_Report_${Date.now()}.pdf`);
+            } catch (err) { return msg.reply('⚠️ خطأ في PDF.'); }
+        }
 
-            if (userState[senderPhone] === 'APPT_MAIN_MENU') {
-                if (text === '1') {
-                    if (currentUser.permission === 'مسؤول' || currentUser.permission === 'إداري') { userState[senderPhone] = 'ADMIN_APPT_TARGET'; apptFilters[senderPhone] = {}; return msg.reply(renderAdminApptTarget()); }
-                    else { userState[senderPhone] = 'APPT_DATE_PROMPT'; apptFilters[senderPhone] = { doctor: currentUser.name, clinic: 'الكل' }; return msg.reply(`📅 *مواعيد د. ${currentUser.name}*\nالرجاء إرسال التاريخ (مثال: ${formatDisplayDate(getStandardDateISO(new Date()))}):`); }
-                } else if (text === '2') { userState[senderPhone] = 'APPT_PATIENT_SEARCH_INPUT'; return msg.reply('🔤 أرسل *اسم المريض*:'); }
+        if (userState[senderPhone] === 'APPT_MAIN_MENU') {
+            if (text === '1') {
+                if (currentUser.permission === 'مسؤول' || currentUser.permission === 'إداري') { userState[senderPhone] = 'ADMIN_APPT_TARGET'; apptFilters[senderPhone] = {}; return msg.reply(renderAdminApptTarget()); }
+                else { userState[senderPhone] = 'APPT_DATE_PROMPT'; apptFilters[senderPhone] = { doctor: currentUser.name, clinic: 'الكل' }; return msg.reply(`📅 *مواعيد د. ${currentUser.name}*\nالرجاء إرسال التاريخ (مثال: ${formatDisplayDate(getStandardDateISO(new Date()))}):`); }
+            } else if (text === '2') { userState[senderPhone] = 'APPT_PATIENT_SEARCH_INPUT'; return msg.reply('🔤 أرسل *اسم المريض*:'); }
+        }
+        if (userState[senderPhone] === 'APPT_PATIENT_SEARCH_INPUT') {
+            msg.reply('⏳ جاري البحث...'); const result = await searchPatientByName(text);
+            if (result.error) return msg.reply(result.error); if (result.matches.length === 0) return msg.reply('❌ غير موجود.');
+            if (result.matches.length === 1) {
+                msg.reply(`⏳ جاري جلب مواعيد *${result.matches[0].name}*...`);
+                const apptRes = await fetchAppointmentsFromSheet({ targetPatient: result.matches[0], doctor: 'الكل', clinic: 'الكل', date: 'الكل' });
+                userState[senderPhone] = 'IDLE'; return msg.reply(formatAppointmentMessage(result.matches[0].name, result.matches[0].phone, apptRes.data || []));
             }
-            if (userState[senderPhone] === 'APPT_PATIENT_SEARCH_INPUT') {
-                msg.reply('⏳ جاري البحث...'); const result = await searchPatientByName(text);
-                if (result.error) return msg.reply(result.error); if (result.matches.length === 0) return msg.reply('❌ غير موجود.');
-                if (result.matches.length === 1) {
-                    msg.reply(`⏳ جاري جلب مواعيد *${result.matches[0].name}*...`);
-                    const apptRes = await fetchAppointmentsFromSheet({ targetPatient: result.matches[0], doctor: 'الكل', clinic: 'الكل', date: 'الكل' });
-                    userState[senderPhone] = 'IDLE'; return msg.reply(formatAppointmentMessage(result.matches[0].name, result.matches[0].phone, apptRes.data || []));
-                }
-                userState[senderPhone] = 'APPT_PATIENT_SELECT'; userSearchResults[senderPhone] = result.matches;
-                let listMsg = `✅ *متعدد:*\n\n`; result.matches.forEach((p, i) => listMsg += `*${i + 1}.* ${p.name}\n`); return msg.reply(listMsg + `\n*0.* ↩️ الرجوع`);
-            }
-            if (userState[senderPhone] === 'APPT_PATIENT_SELECT') {
-                const matches = userSearchResults[senderPhone]; const i = parseInt(text) - 1; if (isNaN(i) || i < 0 || i >= matches.length) return msg.reply('❌ غير صحيح.');
-                userState[senderPhone] = 'IDLE'; delete userSearchResults[senderPhone];
-                msg.reply(`⏳ جاري الجلب...`); const apptRes = await fetchAppointmentsFromSheet({ targetPatient: matches[i], doctor: 'الكل', clinic: 'الكل', date: 'الكل' });
-                return msg.reply(formatAppointmentMessage(matches[i].name, matches[i].phone, apptRes.data || []));
-            }
-            if (userState[senderPhone] === 'ADMIN_APPT_TARGET') {
-                if (text === '1') { apptFilters[senderPhone].clinic = 'ناصر'; apptFilters[senderPhone].doctor = 'الكل'; }
-                else if (text === '2') { apptFilters[senderPhone].clinic = 'روني'; apptFilters[senderPhone].doctor = 'الكل'; }
-                else if (text === '3') { userState[senderPhone] = 'ADMIN_APPT_DOCTOR'; return msg.reply('👨‍⚕️ اكتب *اسم الطبيب*:'); }
-                else if (text === '4') { apptFilters[senderPhone].clinic = 'الكل'; apptFilters[senderPhone].doctor = 'الكل'; }
-                else return msg.reply('❌ غير صحيح.');
-                userState[senderPhone] = 'APPT_DATE_PROMPT'; return msg.reply('🗓️ أرسل التاريخ أو "الكل":');
-            }
-            if (userState[senderPhone] === 'ADMIN_APPT_DOCTOR') { apptFilters[senderPhone].doctor = text; apptFilters[senderPhone].clinic = 'الكل'; userState[senderPhone] = 'APPT_DATE_PROMPT'; return msg.reply('🗓️ أرسل التاريخ أو "الكل":'); }
-            if (userState[senderPhone] === 'APPT_DATE_PROMPT') {
-                msg.reply('⏳ جاري الجلب...'); apptFilters[senderPhone].date = text; 
-                const result = await fetchAppointmentsFromSheet(apptFilters[senderPhone]);
-                userState[senderPhone] = 'IDLE'; delete apptFilters[senderPhone];
-                if (result.error) return msg.reply(result.error); if (result.data.length === 0) return msg.reply('❌ لا توجد مواعيد.');
-                let responseMsg = `📅 *المواعيد:*\n\n`; result.data.forEach((appt, i) => { responseMsg += `*${i + 1}.* ${appt.patient} (${appt.doctor})\n🗓️ ${formatDisplayDate(appt.date)} ⏰ ${appt.start}\n〰️〰️〰️\n`; });
-                return msg.reply(responseMsg + '💡 (أرسل "استعلام").');
-            }
+            userState[senderPhone] = 'APPT_PATIENT_SELECT'; userSearchResults[senderPhone] = result.matches;
+            let listMsg = `✅ *متعدد:*\n\n`; result.matches.forEach((p, i) => listMsg += `*${i + 1}.* ${p.name}\n`); return msg.reply(listMsg + `\n*0.* ↩️ الرجوع`);
+        }
+        if (userState[senderPhone] === 'APPT_PATIENT_SELECT') {
+            const matches = userSearchResults[senderPhone]; const i = parseInt(text) - 1; if (isNaN(i) || i < 0 || i >= matches.length) return msg.reply('❌ غير صحيح.');
+            userState[senderPhone] = 'IDLE'; delete userSearchResults[senderPhone];
+            msg.reply(`⏳ جاري الجلب...`); const apptRes = await fetchAppointmentsFromSheet({ targetPatient: matches[i], doctor: 'الكل', clinic: 'الكل', date: 'الكل' });
+            return msg.reply(formatAppointmentMessage(matches[i].name, matches[i].phone, apptRes.data || []));
+        }
+        if (userState[senderPhone] === 'ADMIN_APPT_TARGET') {
+            if (text === '1') { apptFilters[senderPhone].clinic = 'ناصر'; apptFilters[senderPhone].doctor = 'الكل'; }
+            else if (text === '2') { apptFilters[senderPhone].clinic = 'روني'; apptFilters[senderPhone].doctor = 'الكل'; }
+            else if (text === '3') { userState[senderPhone] = 'ADMIN_APPT_DOCTOR'; return msg.reply('👨‍⚕️ اكتب *اسم الطبيب*:'); }
+            else if (text === '4') { apptFilters[senderPhone].clinic = 'الكل'; apptFilters[senderPhone].doctor = 'الكل'; }
+            else return msg.reply('❌ غير صحيح.');
+            userState[senderPhone] = 'APPT_DATE_PROMPT'; return msg.reply('🗓️ أرسل التاريخ أو "الكل":');
+        }
+        if (userState[senderPhone] === 'ADMIN_APPT_DOCTOR') { apptFilters[senderPhone].doctor = text; apptFilters[senderPhone].clinic = 'الكل'; userState[senderPhone] = 'APPT_DATE_PROMPT'; return msg.reply('🗓️ أرسل التاريخ أو "الكل":'); }
+        if (userState[senderPhone] === 'APPT_DATE_PROMPT') {
+            msg.reply('⏳ جاري الجلب...'); apptFilters[senderPhone].date = text; 
+            const result = await fetchAppointmentsFromSheet(apptFilters[senderPhone]);
+            userState[senderPhone] = 'IDLE'; delete apptFilters[senderPhone];
+            if (result.error) return msg.reply(result.error); if (result.data.length === 0) return msg.reply('❌ لا توجد مواعيد.');
+            let responseMsg = `📅 *المواعيد:*\n\n`; result.data.forEach((appt, i) => { responseMsg += `*${i + 1}.* ${appt.patient} (${appt.doctor})\n🗓️ ${formatDisplayDate(appt.date)} ⏰ ${appt.start}\n〰️〰️〰️\n`; });
+            return msg.reply(responseMsg + '💡 (أرسل "استعلام").');
+        }
 
-            if (userState[senderPhone] === 'QUEUE_SEARCH_INPUT') {
-                msg.reply('⏳ جاري البحث...'); const result = await searchPatientByName(text);
-                if (result.error) return msg.reply(result.error); if (result.matches.length === 0) return msg.reply('❌ غير موجود.');
-                if (result.matches.length === 1) {
-                    if (!userSelectedQueue[senderPhone]) userSelectedQueue[senderPhone] = []; userSelectedQueue[senderPhone].push(result.matches[0]); userState[senderPhone] = 'QUEUE_ACTION_MENU';
-                    return msg.reply(`✅ تمت الإضافة!\n👥 العدد: *${userSelectedQueue[senderPhone].length}*\n1️⃣ إضافة آخر ➕\n2️⃣ إنهاء وعرض 📋`);
-                }
-                userState[senderPhone] = 'QUEUE_SELECT_PATIENT'; userSearchResults[senderPhone] = result.matches;
-                let listMsg = `✅ *مريض متعدد:*\n\n`; result.matches.forEach((p, i) => listMsg += `*${i + 1}.* ${p.name}\n`); return msg.reply(listMsg + `\n*0.* ↩️ الرجوع`);
-            }
-            if (userState[senderPhone] === 'QUEUE_SELECT_PATIENT') {
-                const matches = userSearchResults[senderPhone]; const i = parseInt(text) - 1; if (isNaN(i) || i < 0 || i >= matches.length) return msg.reply('❌ غير صحيح.');
-                if (!userSelectedQueue[senderPhone]) userSelectedQueue[senderPhone] = []; userSelectedQueue[senderPhone].push(matches[i]);
-                delete userSearchResults[senderPhone]; userState[senderPhone] = 'QUEUE_ACTION_MENU';
+        if (userState[senderPhone] === 'QUEUE_SEARCH_INPUT') {
+            msg.reply('⏳ جاري البحث...'); const result = await searchPatientByName(text);
+            if (result.error) return msg.reply(result.error); if (result.matches.length === 0) return msg.reply('❌ غير موجود.');
+            if (result.matches.length === 1) {
+                if (!userSelectedQueue[senderPhone]) userSelectedQueue[senderPhone] = []; userSelectedQueue[senderPhone].push(result.matches[0]); userState[senderPhone] = 'QUEUE_ACTION_MENU';
                 return msg.reply(`✅ تمت الإضافة!\n👥 العدد: *${userSelectedQueue[senderPhone].length}*\n1️⃣ إضافة آخر ➕\n2️⃣ إنهاء وعرض 📋`);
             }
-            if (userState[senderPhone] === 'QUEUE_ACTION_MENU') {
-                if (text === '1') { userState[senderPhone] = 'QUEUE_SEARCH_INPUT'; return msg.reply('🔤 أرسل اسم المريض التالي:'); }
-                else if (text === '2') {
-                    const queue = userSelectedQueue[senderPhone] || []; if (queue.length === 0) { userState[senderPhone] = 'MENU'; return msg.reply('❌ القائمة فارغة.'); }
-                    msg.reply(`⏳ جاري التجميع...`); const reportRes = await fetchQueueBookingReport(queue, currentUser);
-                    userState[senderPhone] = 'IDLE'; userSelectedQueue[senderPhone] = [];
-                    if (reportRes.error) return msg.reply(reportRes.error); return msg.reply(formatQueueBookingMessage(reportRes));
-                } else return msg.reply('❌ اختيار غير صحيح.');
-            }
+            userState[senderPhone] = 'QUEUE_SELECT_PATIENT'; userSearchResults[senderPhone] = result.matches;
+            let listMsg = `✅ *مريض متعدد:*\n\n`; result.matches.forEach((p, i) => listMsg += `*${i + 1}.* ${p.name}\n`); return msg.reply(listMsg + `\n*0.* ↩️ الرجوع`);
+        }
+        if (userState[senderPhone] === 'QUEUE_SELECT_PATIENT') {
+            const matches = userSearchResults[senderPhone]; const i = parseInt(text) - 1; if (isNaN(i) || i < 0 || i >= matches.length) return msg.reply('❌ غير صحيح.');
+            if (!userSelectedQueue[senderPhone]) userSelectedQueue[senderPhone] = []; userSelectedQueue[senderPhone].push(matches[i]);
+            delete userSearchResults[senderPhone]; userState[senderPhone] = 'QUEUE_ACTION_MENU';
+            return msg.reply(`✅ تمت الإضافة!\n👥 العدد: *${userSelectedQueue[senderPhone].length}*\n1️⃣ إضافة آخر ➕\n2️⃣ إنهاء وعرض 📋`);
+        }
+        if (userState[senderPhone] === 'QUEUE_ACTION_MENU') {
+            if (text === '1') { userState[senderPhone] = 'QUEUE_SEARCH_INPUT'; return msg.reply('🔤 أرسل اسم المريض التالي:'); }
+            else if (text === '2') {
+                const queue = userSelectedQueue[senderPhone] || []; if (queue.length === 0) { userState[senderPhone] = 'MENU'; return msg.reply('❌ القائمة فارغة.'); }
+                msg.reply(`⏳ جاري التجميع...`); const reportRes = await fetchQueueBookingReport(queue, currentUser);
+                userState[senderPhone] = 'IDLE'; userSelectedQueue[senderPhone] = [];
+                if (reportRes.error) return msg.reply(reportRes.error); return msg.reply(formatQueueBookingMessage(reportRes));
+            } else return msg.reply('❌ اختيار غير صحيح.');
+        }
 
-        } catch (error) { console.error('Handler Error:', error); }
-    });
-
-    client.initialize();
-
-}).catch(err => {
-    console.error('❌ فشل الاتصال بقاعدة بيانات MongoDB:', err);
+    } catch (error) { console.error('Handler Error:', error); }
 });
+
+
+        client.initialize().catch(err => {
+            botStatus = '❌ فشل تشغيل المتصفح/واتساب';
+            lastError = err.message;
+            console.error('INIT ERROR:', err);
+        });
+
+    }).catch(err => {
+        botStatus = '❌ فشل الاتصال بـ MongoDB';
+        lastError = err.message;
+        console.error('❌ فشل الاتصال بقاعدة بيانات MongoDB:', err);
+    });
+}
+
+if (!MONGODB_URI) {
+    botStatus = '❌ متغير MONGODB_URI غير مضبوط في Render (Environment)';
+    console.error(botStatus);
+} else {
+    startBot();
+}
