@@ -1,0 +1,24 @@
+{
+  "name": "almajd",
+  "version": "1.0.0",
+  "description": "WhatsApp Messenger Bot for Clinic",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "mtoman",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@google/generative-ai": "latest",
+    "express": "^4.19.2",
+    "googleapis": "^174.0.1",
+    "mongoose": "^6.13.0",
+    "node-cron": "^3.0.3",
+    "puppeteer": "^22.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js#main",
+    "wwebjs-mongo": "^1.1.0",
+    "xlsx": "^0.18.5"
+  }
+}

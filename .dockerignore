@@ -1,0 +1,11 @@
+node_modules
+.git
+.wwebjs_auth
+.wwebjs_cache
+credentials.json
+token.json
+qr_code.txt
+app.py
+gmail-auth.js
+requirements.txt
+packages.txt
