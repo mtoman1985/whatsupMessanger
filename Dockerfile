@@ -1,7 +1,8 @@
 FROM node:18-slim
 
-# تثبيت Chromium وكل المكتبات النظامية اللي محتاجها عشان يشتغل
+# تثبيت Chromium وأداة git وكل المكتبات النظامية اللازمة
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
     chromium \
     fonts-liberation \
     libasound2 \
@@ -24,7 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# منع Puppeteer من تحميل نسخة Chrome خاصة به (هنستخدم Chromium المثبت من النظام بدلاً منها)
+# منع Puppeteer من تحميل نسخة Chrome خاصة به (استخدام Chromium المثبت من النظام)
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
