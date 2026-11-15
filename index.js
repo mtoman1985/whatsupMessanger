@@ -34,7 +34,7 @@ const MAIN_DATA_FILE_ID = '1VPTp4-r7vnR-DhSibNvB27GPXHBqVQ2H';
 const REPORTS_FOLDER_ID = '1DsMhZeikBqmocqKy230FMkIBOVgeg3mm';
 
 // ==========================================
-// ⚙️ لوحة تحكم نسب الأطباء (يمكنك تعديلها بأي وقت)
+// ⚙️ لوحة تحكم نسب الأطباء
 // ==========================================
 const DOCTOR_RATES = {
     'حسام العايدي': 0.35, 
@@ -349,7 +349,7 @@ async function searchPatientByName(patientName) {
 }
 
 // ==========================================
-// 👤 إدارة بيانات المرضى (إضافة / تعديل) عبر Google Sheets API
+// 👤 إدارة بيانات المرضى
 // ==========================================
 const PATIENT_SHEET_KEYWORD = 'Sheet2';
 const PATIENT_COL_ALIASES = {
@@ -1437,12 +1437,22 @@ mongoose.connect(MONGODB_URI).then(() => {
         }),
         puppeteer: { 
             headless: true, 
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process', '--no-zygote', '--disable-accelerated-2d-canvas', '--disable-software-rasterizer', '--mute-audio'], 
-            timeout: 120000 
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-dev-shm-usage', 
+                '--disable-accelerated-2d-canvas', 
+                '--no-first-run', 
+                '--no-zygote', 
+                '--single-process', 
+                '--disable-gpu',
+                '--disable-software-rasterizer',
+                '--mute-audio'
+            ], 
+            timeout: 60000 // زيادة مهلة المتصفح إلى 60 ثانية لإنهاء خطأ الـ Timeout
         },
-        authTimeoutMs: 120000, 
-        qrMaxRetries: 3,
-        webVersionCache: { type: 'remote', remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html' }
+        authTimeoutMs: 60000, 
+        qrMaxRetries: 4
     });
 
     client.on('qr', (qr) => { 
@@ -1585,7 +1595,7 @@ mongoose.connect(MONGODB_URI).then(() => {
                 if (currentState === 'ADMIN_APPT_DOCTOR') { userState[senderPhone] = 'ADMIN_APPT_TARGET'; return msg.reply(renderAdminApptTarget()); }
                 if (currentState === 'APPT_DATE_PROMPT') { userState[senderPhone] = 'ADMIN_APPT_TARGET'; return msg.reply(renderAdminApptTarget()); }
                 if (currentState === 'DAILY_DOCTOR_SELECT') { userState[senderPhone] = 'DAILY_CLINIC_SELECT'; return msg.reply(renderClinicMenu('التقرير المالي (PDF)')); }
-                if (currentState === 'DAILY_DOCTOR_SPECIFIC') { userState[senderPhone] = 'DAILY_DOCTOR_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)')); }
+                if (currentState === 'DAILY_DOCTOR_SPECIFIC') { userState[senderPhone] = 'DAILY_CLINIC_SELECT'; return msg.reply(renderDoctorSelectMenu('التقرير المالي (PDF)')); }
                 if (currentState === 'DAILY_DATE_MENU') {
                     if (currentUser.permission === 'مسؤول' || currentUser.permission === 'إداري') {
                         if (dailyFilters[senderPhone]?.doctor && dailyFilters[senderPhone].doctor !== 'الكل') { userState[senderPhone] = 'DAILY_DOCTOR_SPECIFIC'; return msg.reply(renderDoctorsListMenu()); }
