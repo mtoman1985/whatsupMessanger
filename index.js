@@ -16,6 +16,8 @@ const crypto = require('crypto');
 const app = express();
 app.use(express.json());
 
+let latestQR = '';
+
 const genAI = new GoogleGenerativeAI("AQ.Ab8RN6IkPuSKLGaDQUyQ7mT8S9AbX22wVN5dFAElw_Beyqtfig"); 
 const pendingAIRreplies = {};
 
@@ -1417,6 +1419,36 @@ app.post('/api/jawwal-pay', (req, res) => {
     } else { res.status(200).send('Ignored'); }
 });
 
+// ==========================================
+// 🌐 مسار لعرض QR Code في المتصفح عبر الرابط /qr
+// ==========================================
+app.get('/qr', (req, res) => {
+    if (!latestQR) {
+        return res.send(`
+            <html dir="rtl"><head><meta charset="UTF-8"><title>حالة الواتساب</title></head>
+            <body style="font-family:Cairo,sans-serif; text-align:center; padding-top:50px; background:#f4f9f9;">
+                <h2 style="color:#168a9a;">✅ الواتساب مرتبط بالفعل أو جاري التحميل ولا يحتاج لمسح رمز جديد!</h2>
+                <p>إذا أردت ربط جهاز جديد، قم بعمل (Manual Deploy) من لوحة تحكم Render.</p>
+            </body></html>
+        `);
+    }
+    res.send(`
+        <html dir="rtl"><head><meta charset="UTF-8"><title>مسح رمز الواتساب</title></head>
+        <body style="font-family:Cairo,sans-serif; text-align:center; padding-top:30px; background:#f4f9f9;">
+            <h2 style="color:#168a9a;">امسح الرمز أدناه لتفعيل بوت عيادة الأسنان 🦷</h2>
+            <div id="qrcode" style="display:inline-block; margin-top:20px; background:white; padding:20px; border-radius:10px; box-shadow:0 4px 10px rgba(0,0,0,0.1);"></div>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+            <script>
+                new QRCode(document.getElementById("qrcode"), {
+                    text: "${latestQR}",
+                    width: 265,
+                    height: 265
+                });
+            </script>
+        </body></html>
+    `);
+});
+
 const PORT = process.env.PORT || 7861; 
 app.listen(PORT, () => { console.log(`🌍 نظام الاستقبال يعمل بنجاح على البورت ${PORT}`); });
 
@@ -1449,20 +1481,22 @@ mongoose.connect(MONGODB_URI).then(() => {
                 '--disable-software-rasterizer',
                 '--mute-audio'
             ], 
-            timeout: 60000 // زيادة مهلة المتصفح إلى 60 ثانية لإنهاء خطأ الـ Timeout
+            timeout: 60000 // زيادة مهلة المتصفح إلى 60 ثانية لتجنب أخطاء المهلة
         },
         authTimeoutMs: 60000, 
         qrMaxRetries: 4
     });
 
     client.on('qr', (qr) => { 
-        console.log('\n✅ تم توليد باركود جديد (امسحه مرة واحدة فقط):'); 
+        latestQR = qr;
+        console.log('\n✅ تم توليد باركود جديد (افتح رابط /qr لمسحه):'); 
         qrcode.generate(qr, { small: true });
         fs.writeFileSync('qr_code.txt', qr); 
     });
 
     client.on('ready', async () => {
         console.log('\n✅ تم الربط بنجاح! البوت متصل بالواتساب وجاهز للعمل! 🚀');
+        latestQR = ''; // مسح الرمز لأنه تم الاتصال بنجاح
         if (fs.existsSync('qr_code.txt')) fs.unlinkSync('qr_code.txt');
         
         if (!isSystemInitialized) {
