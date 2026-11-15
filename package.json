@@ -1,17 +1,35 @@
 {
-  "name": "whatsapp-webjs-appsheet",
+  "name": "almajd",
   "version": "1.0.0",
-  "description": "سيرفر يربط AppSheet بواتس اب مباشرة عبر whatsapp-web.js (مجاني بالكامل، بدون Meta)",
-  "main": "server.js",
+  "description": "WhatsApp Messenger Bot for Clinic",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "engines": {
-    "node": ">=18.0.0"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mtoman1985/whatsupMessanger.git"
   },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "clinic"
+  ],
+  "author": "mtoman",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/mtoman1985/whatsupMessanger/issues"
+  },
+  "homepage": "https://github.com/mtoman1985/whatsupMessanger#readme",
   "dependencies": {
+    "@google/generative-ai": "latest",
     "express": "^4.19.2",
-    "whatsapp-web.js": "^1.26.0",
-    "qrcode": "^1.5.3"
+    "googleapis": "^174.0.1",
+    "puppeteer": "^22.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js#main",
+    "xlsx": "^0.18.5"
   }
 }
