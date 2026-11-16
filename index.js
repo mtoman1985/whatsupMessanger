@@ -1624,6 +1624,19 @@ function startBot() {
         client.on('ready', async () => {
             console.log('\n✅ تم الربط بنجاح! البوت متصل بالواتساب وجاهز للعمل! 🚀');
             botStatus = '✅ متصل وجاهز';
+            try {
+                if (client.pupBrowser) client.pupBrowser.on('disconnected', () => { console.error('💥 المتصفح (Chromium) انقطع/انهار - غالباً نفاد الذاكرة'); botStatus = '💥 المتصفح انهار'; });
+                if (client.pupPage) {
+                    client.pupPage.on('error', e => console.error('💥 صفحة واتساب انهارت:', e.message));
+                    client.pupPage.on('close', () => console.error('💥 صفحة واتساب أُغلقت'));
+                }
+            } catch (e) { console.error('hook error:', e.message); }
+            if (!global.__stateTimer) {
+                global.__stateTimer = setInterval(async () => {
+                    try { console.log('STATE', await client.getState()); }
+                    catch (e) { console.error('STATE ERR (الجلسة/المتصفح لا يستجيب):', e.message); }
+                }, 60000);
+            }
             latestQR = '';
             lastError = '';
             if (fs.existsSync('qr_code.txt')) fs.unlinkSync('qr_code.txt');
@@ -1638,6 +1651,8 @@ function startBot() {
             }
         });
 
+        client.on('change_state', (st) => console.log('🔄 change_state:', st));
+
         client.on('remote_session_saved', () => {
             console.log('💾 تم حفظ ملفات الجلسة في قاعدة بيانات MongoDB بنجاح ولن تحتاج لمسح الـ QR مجدداً.');
         });
@@ -1651,6 +1666,7 @@ function startBot() {
         });
 
 client.on('message_create', async msg => {
+    console.log('📩 MSG', { from: msg.from, author: msg.author, to: msg.to, fromMe: msg.fromMe, type: msg.type, body: (msg.body || '').slice(0, 30) });
     try {
         let senderPhone = (msg.author || msg.from).split('@')[0];
         if (senderPhone.includes(':')) senderPhone = senderPhone.split(':')[0];
@@ -1674,6 +1690,7 @@ client.on('message_create', async msg => {
 
         const currentUser = USERS[senderPhone];
         const isAdmin = (currentUser && (currentUser.permission === 'مسؤول' || currentUser.permission === 'إداري'));
+        console.log('👤 USER', senderPhone, '=>', currentUser ? (currentUser.name + ' / ' + currentUser.permission) : '❌ غير مسجل في USERS', '| state:', userState[senderPhone] || '-');
 
         if (isAdmin && text === 'ربط جوجل') {
             try {
@@ -1723,6 +1740,7 @@ client.on('message_create', async msg => {
         }
 
         if (!currentUser) {
+            console.log('⚠️ تجاهل: المرسل غير مسجل في USERS ->', senderPhone, '| النص:', text.slice(0, 30), '(أضفه إلى USERS إن كان رقمك)');
             if (msg.fromMe) { const recipientPhone = msg.to.split('@')[0]; if (pendingAIRreplies[recipientPhone]) { clearTimeout(pendingAIRreplies[recipientPhone].timer); delete pendingAIRreplies[recipientPhone]; } return; }
             if (!text) return;
             if (!pendingAIRreplies[senderPhone]) pendingAIRreplies[senderPhone] = { messages: [], timer: null };
@@ -2086,7 +2104,7 @@ client.on('message_create', async msg => {
             } else return msg.reply('❌ اختيار غير صحيح.');
         }
 
-    } catch (error) { console.error('Handler Error:', error); }
+    } catch (error) { console.error('Handler Error:', error && error.stack ? error.stack : error); lastError = 'Handler: ' + (error && error.message ? error.message : error); }
 });
 
 
