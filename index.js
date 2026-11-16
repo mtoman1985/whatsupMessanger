@@ -1374,7 +1374,7 @@ function startSheetTracker(whatsappClient) {
                 lastKnownRowCount = rows.length;
             }
         } catch (err) {}
-    }, 15000); 
+    }, Number(process.env.TRACKER_INTERVAL_MS) || 60000); 
 }
 
 // ==========================================
@@ -1532,11 +1532,31 @@ app.listen(PORT, () => { console.log(`🌍 نظام الاستقبال يعمل 
 // ==========================================
 const MONGODB_URI = process.env.MONGODB_URI;
 
+// وضع خفيف (افتراضي): يقلل استهلاك الذاكرة. للتعطيل ضع LITE_MODE=0
+const LITE_ARGS = (process.env.LITE_MODE === '0') ? [] : [
+    '--blink-settings=imagesEnabled=false',
+    '--disable-remote-fonts',
+    '--disable-component-update',
+    '--disable-domain-reliability',
+    '--disable-client-side-phishing-detection',
+    '--disable-features=Translate,BackForwardCache,MediaRouter,OptimizationHints'
+];
+
 function startBot() {
     botStatus = '⏳ جاري الاتصال بـ MongoDB...';
-    mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 20000 }).then(() => {
+    mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 20000 }).then(async () => {
         console.log('✅ تم الاتصال بقاعدة بيانات MongoDB بنجاح.');
         botStatus = '⏳ تم الاتصال بـ MongoDB، جاري تشغيل واتساب...';
+
+        // لحذف جلسة واتساب التالفة: ضع RESET_WA_SESSION=1 في المتغيرات، انشر مرة، ثم احذف المتغير
+        if (process.env.RESET_WA_SESSION === '1') {
+            try {
+                const cols = await mongoose.connection.db.listCollections().toArray();
+                for (const c of cols) {
+                    if (c.name.startsWith('whatsapp-')) { await mongoose.connection.db.dropCollection(c.name); console.log('🗑️ تم حذف جلسة واتساب القديمة:', c.name); }
+                }
+            } catch (e) { console.error('Reset session error:', e.message); }
+        }
 
         const store = new MongoStore({ mongoose: mongoose });
 
@@ -1566,12 +1586,14 @@ function startBot() {
                     '--disable-translate',
                     '--metrics-recording-only',
                     '--no-default-browser-check',
-                    '--js-flags=--max-old-space-size=256'
+                    '--js-flags=--max-old-space-size=256',
+                    ...LITE_ARGS
                 ],
-                timeout: 60000
+                timeout: 180000
             },
-            authTimeoutMs: 60000,
-            qrMaxRetries: 4
+            // المعالج المجاني بطيء: بلا مهلة للمصادقة وبلا حد لتجديد QR
+            authTimeoutMs: 0,
+            qrMaxRetries: 0
         });
 
         client.on('qr', (qr) => {
@@ -1579,7 +1601,7 @@ function startBot() {
             botStatus = '📱 امسح رمز QR الآن (افتح /qr)';
             console.log('\n✅ تم توليد باركود جديد (افتح رابط /qr لمسحه):');
             qrcode.generate(qr, { small: true });
-            fs.writeFileSync('qr_code.txt', qr);
+            try { fs.writeFileSync('qr_code.txt', qr); } catch (e) { /* مجلد للقراءة فقط: لا يهم */ }
         });
 
         client.on('loading_screen', (percent, message) => {
@@ -1673,7 +1695,7 @@ client.on('message_create', async msg => {
                 const oAuth2Client = new google.auth.OAuth2(keys.client_id, keys.client_secret, keys.redirect_uris[0]);
                 const { tokens } = await oAuth2Client.getToken(code);
                 
-                fs.writeFileSync('token.json', JSON.stringify(tokens, null, 2)); isAuthValid = true;
+                try { fs.writeFileSync('token.json', JSON.stringify(tokens, null, 2)); } catch (e) { console.error('token write:', e.message); } isAuthValid = true;
                     let replyMsg = `✅ مبروك! تم الربط، والبوت يعمل الآن بالصلاحية الجديدة.\n\n`;
                     replyMsg += `⚠️ *حتى لا تفقدها عند إعادة تشغيل السيرفر:*\n`;
                     replyMsg += `1️⃣ افتح Render ← Environment.\n`;
