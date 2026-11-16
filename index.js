@@ -20,6 +20,11 @@ let latestQR = '';
 let botStatus = '⏳ البوت قيد التشغيل...';
 let lastError = '';
 
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+    lastError = String(err && err.message ? err.message : err);
+});
+
 process.on('unhandledRejection', (reason) => {
     console.error('Unhandled Rejection:', reason);
     lastError = String(reason && reason.message ? reason.message : reason);
@@ -1483,9 +1488,24 @@ app.post('/api/jawwal-pay', (req, res) => {
 // ==========================================
 // 🌐 صفحة حالة البوت (/) وعرض QR (/qr)
 // ==========================================
+function readNum(f) {
+    try { const v = fs.readFileSync(f, 'utf8').trim(); return v === 'max' ? Infinity : Number(v); } catch (e) { return null; }
+}
+function memText() {
+    let used = readNum('/sys/fs/cgroup/memory.current'); let limit = readNum('/sys/fs/cgroup/memory.max');
+    if (used === null) { used = readNum('/sys/fs/cgroup/memory/memory.usage_in_bytes'); limit = readNum('/sys/fs/cgroup/memory/memory.limit_in_bytes'); }
+    const mb = (b) => Math.round(b / 1048576);
+    const nodeMb = mb(process.memoryUsage().rss);
+    if (used === null) return `RAM (Node): ${nodeMb}MB`;
+    const lim = (limit && isFinite(limit) && limit < 1e13) ? ` / ${mb(limit)}MB` : '';
+    return `RAM (container): ${mb(used)}MB${lim} | Node: ${nodeMb}MB`;
+}
+// يُسجَّل كل 30 ثانية: آخر سطر قبل إعادة التشغيل يكشف إن كان السبب نفاد الذاكرة
+setInterval(() => console.log('MEM', memText()), 30000);
+
 function statusPage(inner) {
     return `<html dir="rtl"><head><meta charset="UTF-8"><meta http-equiv="refresh" content="5"><title>حالة البوت</title></head>
-    <body style="font-family:Cairo,sans-serif; text-align:center; padding-top:30px; background:#f4f9f9;">${inner}</body></html>`;
+    <body style="font-family:Cairo,sans-serif; text-align:center; padding-top:30px; background:#f4f9f9;">${inner}<p style="color:#777; direction:ltr; margin-top:40px;">${memText()}</p></body></html>`;
 }
 const errBox = () => lastError ? `<p style="color:#c0392b; direction:ltr; word-break:break-all;">${String(lastError).replace(/</g, '&lt;')}</p>` : '';
 
@@ -1519,10 +1539,11 @@ function startBot() {
         botStatus = '⏳ تم الاتصال بـ MongoDB، جاري تشغيل واتساب...';
 
         const store = new MongoStore({ mongoose: mongoose });
-const client = new Client({
+
+        const client = new Client({
             authStrategy: new RemoteAuth({
                 store: store,
-                backupSyncIntervalMs: 300000
+                backupSyncIntervalMs: 300000 // مزامنة الجلسة السحابية كل 5 دقائق
             }),
             puppeteer: {
                 headless: true,
@@ -1537,14 +1558,22 @@ const client = new Client({
                     '--single-process',
                     '--disable-gpu',
                     '--disable-software-rasterizer',
-                    '--mute-audio'
+                    '--mute-audio',
+                    '--disable-extensions',
+                    '--disable-background-networking',
+                    '--disable-default-apps',
+                    '--disable-sync',
+                    '--disable-translate',
+                    '--metrics-recording-only',
+                    '--no-default-browser-check',
+                    '--js-flags=--max-old-space-size=256'
                 ],
-                timeout: 120000 // رفع المهلة إلى دقيقتين
+                timeout: 60000
             },
-            authTimeoutMs: 120000, // رفع مهلة المصادقة
-            qrMaxRetries: 5
+            authTimeoutMs: 60000,
+            qrMaxRetries: 4
         });
-       
+
         client.on('qr', (qr) => {
             latestQR = qr;
             botStatus = '📱 امسح رمز QR الآن (افتح /qr)';
