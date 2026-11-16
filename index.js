@@ -1501,7 +1501,7 @@ function memText() {
     return `RAM (container): ${mb(used)}MB${lim} | Node: ${nodeMb}MB`;
 }
 // يُسجَّل كل 30 ثانية: آخر سطر قبل إعادة التشغيل يكشف إن كان السبب نفاد الذاكرة
-setInterval(() => console.log('MEM', memText()), 30000);
+setInterval(() => console.log('MEM', memText(), '| STATUS:', botStatus, lastError ? '| ERR: ' + String(lastError).slice(0, 120) : ''), 30000);
 
 function statusPage(inner) {
     return `<html dir="rtl"><head><meta charset="UTF-8"><meta http-equiv="refresh" content="5"><title>حالة البوت</title></head>
