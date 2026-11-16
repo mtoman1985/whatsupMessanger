@@ -1519,11 +1519,10 @@ function startBot() {
         botStatus = '⏳ تم الاتصال بـ MongoDB، جاري تشغيل واتساب...';
 
         const store = new MongoStore({ mongoose: mongoose });
-
-        const client = new Client({
+const client = new Client({
             authStrategy: new RemoteAuth({
                 store: store,
-                backupSyncIntervalMs: 300000 // مزامنة الجلسة السحابية كل 5 دقائق
+                backupSyncIntervalMs: 300000
             }),
             puppeteer: {
                 headless: true,
@@ -1540,12 +1539,12 @@ function startBot() {
                     '--disable-software-rasterizer',
                     '--mute-audio'
                 ],
-                timeout: 60000
+                timeout: 120000 // رفع المهلة إلى دقيقتين
             },
-            authTimeoutMs: 60000,
-            qrMaxRetries: 4
+            authTimeoutMs: 120000, // رفع مهلة المصادقة
+            qrMaxRetries: 5
         });
-
+       
         client.on('qr', (qr) => {
             latestQR = qr;
             botStatus = '📱 امسح رمز QR الآن (افتح /qr)';
